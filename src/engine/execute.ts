@@ -1,0 +1,747 @@
+import { buildExpressionScope } from "../expression/context.ts";
+import { resolveParameterValue } from "../expression/evaluator.ts";
+import { extractReferencedJsonFields } from "../mock/field-hints.ts";
+import { executeGenericFallback } from "../nodes/builtin/generic-fallback.ts";
+import type { NodeRegistry } from "../nodes/registry.ts";
+import type {
+  MockLookup,
+  NodeExecuteResult,
+  NodeExecutor,
+  PendingMockRequest,
+  RuntimeContext,
+} from "../nodes/types.ts";
+import type { Item } from "../schema/item.ts";
+import { toItems } from "../schema/item.ts";
+import type { Workflow, WorkflowNode } from "../schema/workflow.ts";
+import { analyzeGraph } from "./graph.ts";
+
+export interface RunOptions {
+  initialInput?: Item[];
+  hasExplicitInput: boolean;
+  mocks: MockLookup;
+  registry: NodeRegistry;
+  now?: Date;
+  /**
+   * Name of the start node to fire this run. Real n8n only ever activates
+   * the one trigger that was actually invoked - workflows very commonly
+   * have several alternate entry points (e.g. Manual Trigger *and* Execute
+   * Workflow Trigger feeding the same logic so the workflow works both
+   * standalone and as a sub-workflow), and only one fires per execution.
+   * Required when the workflow has more than one start node; when there's
+   * exactly one, it's used automatically.
+   */
+  startNode?: string;
+}
+
+export type NodeTraceStatus =
+  | "success"
+  | "error"
+  | "waiting_mock"
+  | "skipped_disabled"
+  | "skipped_annotation"
+  | "skipped_non_main_only"
+  | "skipped_alternate_trigger"
+  | "skipped_no_data"
+  | "pinned"
+  | "unreached";
+
+/**
+ * Node types with no real inputs/outputs in n8n (canvas-only annotations).
+ * These never appear in `connections` in a valid n8n export, so s8n excludes
+ * them from the execution graph entirely rather than treating them as a
+ * start node that needs mock data.
+ */
+const NON_EXECUTABLE_NODE_TYPES = new Set(["n8n-nodes-base.stickyNote"]);
+
+export interface NodeTraceEntry {
+  nodeName: string;
+  nodeType: string;
+  status: NodeTraceStatus;
+  inputItemCounts: number[];
+  outputItemCounts?: number[];
+  error?: string;
+  pendingMock?: PendingMockRequest;
+  /**
+   * Set when this node ran as part of a Split In Batches loop body: which
+   * batch iteration (0-based) this entry belongs to. A loop-body node
+   * appears once per iteration in `trace`, each with its own `runIndex` -
+   * the only place `trace` can contain more than one entry per node name.
+   */
+  runIndex?: number;
+}
+
+/**
+ * Result of driving a Split In Batches loop to completion (or a halt).
+ * Deliberately NOT a `NodeExecuteResult` - only `"done"` carries data the
+ * caller should propagate downstream; the halted cases must stop the SIB's
+ * own branch without propagating anything, matching real n8n halting the
+ * *entire* execution when a loop pauses or fails partway through. See
+ * `runLoopDriver`'s doc comment.
+ */
+type LoopDriverOutcome =
+  | { kind: "done"; output: Item[][] }
+  | { kind: "halted_mock" }
+  | { kind: "halted_error" }
+  | { kind: "halted_new_error"; message: string };
+
+export interface StartNodeCandidate {
+  name: string;
+  type: string;
+}
+
+export interface RunResult {
+  status: "success" | "error" | "needs_mock" | "needs_start_node";
+  workflowName: string;
+  trace: NodeTraceEntry[];
+  nodeOutputs: Record<string, Item[]>;
+  pendingMocks: PendingMockRequest[];
+  errors: string[];
+  /** Populated only when status is "needs_start_node": pass one of these names via `startNode`. */
+  startNodeCandidates?: StartNodeCandidate[];
+}
+
+async function runNodeWithRetry(
+  executor: NodeExecutor,
+  args: Parameters<NodeExecutor["execute"]>[0],
+  node: WorkflowNode,
+): Promise<NodeExecuteResult> {
+  const maxTries = node.retryOnFail ? Math.max(1, node.maxTries) : 1;
+  let lastResult: NodeExecuteResult = {
+    status: "error",
+    message: "Not executed",
+  };
+
+  for (let attempt = 0; attempt < maxTries; attempt++) {
+    try {
+      lastResult = await executor.execute(args);
+    } catch (cause) {
+      lastResult = {
+        status: "error",
+        message: String((cause as Error)?.message ?? cause),
+      };
+    }
+    if (lastResult.status !== "error") return lastResult;
+  }
+  return lastResult;
+}
+
+export async function runWorkflow(
+  workflow: Workflow,
+  options: RunOptions,
+): Promise<RunResult> {
+  const graph = analyzeGraph(workflow);
+  const nodesByName = new Map(workflow.nodes.map((n) => [n.name, n]));
+  const suggestedFields = extractReferencedJsonFields(workflow);
+
+  const pendingData = new Map<string, Item[][]>();
+  const filledSlots = new Map<string, Set<number>>();
+  const nodeOutputs = new Map<string, Item[]>();
+  const nodeSlotOutputs = new Map<string, Item[][]>();
+  const trace: NodeTraceEntry[] = [];
+  const pendingMocks: PendingMockRequest[] = [];
+  const errors: string[] = [];
+  for (const node of workflow.nodes) {
+    const slots = graph.requiredSlots.get(node.name) ?? 1;
+    pendingData.set(
+      node.name,
+      Array.from({ length: slots }, () => []),
+    );
+    filledSlots.set(node.name, new Set());
+  }
+
+  const isNonExecutable = (name: string) =>
+    NON_EXECUTABLE_NODE_TYPES.has(nodesByName.get(name)?.type ?? "") ||
+    graph.nonMainOnlyNodes.has(name);
+
+  const executableStartNodes = graph.startNodes.filter(
+    (name) => !isNonExecutable(name),
+  );
+
+  let activeStartNode: string;
+  if (executableStartNodes.length === 1) {
+    activeStartNode = executableStartNodes[0] as string;
+  } else if (
+    executableStartNodes.length > 1 &&
+    options.startNode &&
+    executableStartNodes.includes(options.startNode)
+  ) {
+    activeStartNode = options.startNode;
+  } else {
+    // Either no runnable entry point exists at all (e.g. every node is a
+    // sticky note or an AI sub-node wired only via a non-"main" connection),
+    // or there are several candidates and the caller didn't disambiguate.
+    // Either way, nothing can meaningfully execute - report it explicitly
+    // instead of silently returning a "success" where zero nodes ran.
+    return {
+      status: "needs_start_node",
+      workflowName: workflow.name,
+      trace: [],
+      nodeOutputs: {},
+      pendingMocks: [],
+      errors:
+        executableStartNodes.length === 0
+          ? [
+              "No runnable start node (a node without incoming connections) was found",
+            ]
+          : options.startNode
+            ? [
+                `The specified startNode "${options.startNode}" is not a start node (it has incoming connections)`,
+              ]
+            : [],
+      startNodeCandidates: executableStartNodes.map((name) => ({
+        name,
+        type: nodesByName.get(name)?.type ?? "",
+      })),
+    };
+  }
+
+  const seedInput = options.initialInput ?? toItems([{}]);
+  const queue: string[] = [];
+  if (activeStartNode) {
+    pendingData.get(activeStartNode)?.splice(0, 1, seedInput);
+    queue.push(activeStartNode);
+  }
+
+  const runtime: RuntimeContext = {
+    workflowName: workflow.name,
+    workflowId: workflow.id,
+    nodeOutputs,
+    now: options.now,
+    mocks: options.mocks,
+    suggestedFields,
+    hasExplicitInput: options.hasExplicitInput,
+    workflowStaticData: new Map(),
+  };
+
+  const executed = new Set<string>();
+
+  for (const node of workflow.nodes) {
+    const isStickyNote = NON_EXECUTABLE_NODE_TYPES.has(node.type);
+    const isNonMainOnly = graph.nonMainOnlyNodes.has(node.name);
+    if (isStickyNote || isNonMainOnly) {
+      executed.add(node.name);
+      trace.push({
+        nodeName: node.name,
+        nodeType: node.type,
+        status: isStickyNote ? "skipped_annotation" : "skipped_non_main_only",
+        inputItemCounts: [],
+      });
+    } else if (
+      executableStartNodes.includes(node.name) &&
+      node.name !== activeStartNode
+    ) {
+      executed.add(node.name);
+      trace.push({
+        nodeName: node.name,
+        nodeType: node.type,
+        status: "skipped_alternate_trigger",
+        inputItemCounts: [],
+      });
+    }
+  }
+
+  const MAX_LOOP_ITERATIONS = 10_000;
+
+  /**
+   * Runs the full dequeue-time handling for one node: disabled/pinned/
+   * empty-input short-circuits, then either a normal executor call or (for a
+   * detected Split In Batches loop) `runLoopDriver`, then applies the result
+   * (trace + nodeOutputs/nodeSlotOutputs + propagate). Shared by the main
+   * queue loop and `drainBodyQueue` so loop-body nodes get identical
+   * disabled/pinned/retry/continueOnFail/error semantics to any other node.
+   */
+  async function processNode(nodeName: string, runIndex?: number) {
+    const node = nodesByName.get(nodeName);
+    if (!node) return;
+
+    const inputSlots = pendingData.get(nodeName) ?? [[]];
+    const inputItems = inputSlots[0] ?? [];
+
+    if (node.disabled) {
+      nodeOutputs.set(nodeName, inputItems);
+      nodeSlotOutputs.set(nodeName, [inputItems]);
+      trace.push({
+        nodeName,
+        nodeType: node.type,
+        status: "skipped_disabled",
+        inputItemCounts: inputSlots.map((s) => s.length),
+        outputItemCounts: [inputItems.length],
+        ...(runIndex !== undefined ? { runIndex } : {}),
+      });
+      propagate(nodeName, [inputItems]);
+      return;
+    }
+
+    const pinned = workflow.pinData?.[nodeName];
+    if (pinned) {
+      const pinnedItems = toItems(pinned);
+      nodeOutputs.set(nodeName, pinnedItems);
+      nodeSlotOutputs.set(nodeName, [pinnedItems]);
+      trace.push({
+        nodeName,
+        nodeType: node.type,
+        status: "pinned",
+        inputItemCounts: inputSlots.map((s) => s.length),
+        outputItemCounts: [pinnedItems.length],
+        ...(runIndex !== undefined ? { runIndex } : {}),
+      });
+      propagate(nodeName, [pinnedItems]);
+      return;
+    }
+
+    // Real n8n skips a node entirely when every one of its inputs delivered
+    // zero items (verified: `incomingConnectionIsEmpty` /
+    // `getConnectionInputData` in workflow-execute.ts, under the modern
+    // `executionOrder: "v1"` default) - unless `alwaysOutputData` is set.
+    // Without this, an If/Switch branch that legitimately has no items
+    // would still fire its downstream nodes (asking for mocks that would
+    // never actually be needed in real n8n). This does NOT apply to the
+    // active start/trigger node itself: real n8n's empty-check only covers
+    // nodes fed via `getConnectionInputData` (i.e. nodes with incoming
+    // connections) - a trigger has none, so it always "runs" even with a
+    // zero-item `--input`, exactly like a webhook call with an empty body.
+    const totalInputItems = inputSlots.reduce(
+      (sum, slot) => sum + slot.length,
+      0,
+    );
+    if (
+      totalInputItems === 0 &&
+      !node.alwaysOutputData &&
+      nodeName !== activeStartNode
+    ) {
+      trace.push({
+        nodeName,
+        nodeType: node.type,
+        status: "skipped_no_data",
+        inputItemCounts: inputSlots.map((s) => s.length),
+        ...(runIndex !== undefined ? { runIndex } : {}),
+      });
+      return;
+    }
+
+    let result: NodeExecuteResult;
+    if (graph.loops.has(nodeName)) {
+      const loopOutcome = await runLoopDriver(nodeName, node, inputItems);
+      if (loopOutcome.kind !== "done") {
+        // The loop paused (waiting_mock) or failed partway through (a body
+        // node's own uncaught error, or the iteration-cap safety cutoff).
+        // Real n8n halts the *entire* execution at that point - nothing
+        // downstream of a paused/failed loop ever runs. Record a trace
+        // entry for the SIB itself and stop here WITHOUT propagating;
+        // do NOT re-push to `errors`/`pendingMocks` for the
+        // "waiting_mock"/"error" cases, since the real failure/mock
+        // request was already recorded against the specific body node that
+        // caused it - only the iteration-cap cutoff is a genuinely new
+        // failure attributable to the SIB itself.
+        if (loopOutcome.kind === "halted_new_error") {
+          errors.push(`[${nodeName}] ${loopOutcome.message}`);
+        }
+        trace.push({
+          nodeName,
+          nodeType: node.type,
+          status: loopOutcome.kind === "halted_mock" ? "waiting_mock" : "error",
+          inputItemCounts: inputSlots.map((s) => s.length),
+          ...(loopOutcome.kind === "halted_new_error"
+            ? { error: loopOutcome.message }
+            : {}),
+          ...(runIndex !== undefined ? { runIndex } : {}),
+        });
+        return;
+      }
+      result = { status: "success", output: loopOutcome.output };
+    } else {
+      // Any node type s8n doesn't explicitly implement is treated as
+      // unmodeled external IO and mocked the same way as HTTP Request,
+      // rather than failing the whole run - see generic-fallback.ts.
+      const executor: NodeExecutor = options.registry.get(node.type) ?? {
+        type: node.type,
+        execute: executeGenericFallback,
+      };
+
+      const buildScope = (item: Item, itemIndex: number, items: Item[]) =>
+        buildExpressionScope({
+          currentItem: item,
+          itemIndex,
+          inputItems: items,
+          currentNodeName: nodeName,
+          workflowName: workflow.name,
+          workflowId: workflow.id,
+          nodeOutputs,
+          nodeSlotOutputs,
+          connections: workflow.connections,
+          now: options.now,
+          timezone: workflow.settings.timezone,
+        });
+
+      result = await runNodeWithRetry(
+        executor,
+        {
+          node,
+          inputItems,
+          inputSlots,
+          runtime,
+          buildScope,
+          isStartNode: nodeName === activeStartNode,
+          ...(runIndex !== undefined ? { loopIterationIndex: runIndex } : {}),
+        },
+        node,
+      );
+    }
+
+    if (result.status === "success") {
+      nodeOutputs.set(nodeName, result.output.flat());
+      nodeSlotOutputs.set(nodeName, result.output);
+      trace.push({
+        nodeName,
+        nodeType: node.type,
+        status: "success",
+        inputItemCounts: inputSlots.map((s) => s.length),
+        outputItemCounts: result.output.map((slot) => slot.length),
+        ...(runIndex !== undefined ? { runIndex } : {}),
+      });
+      propagate(nodeName, result.output);
+    } else if (result.status === "waiting_mock") {
+      pendingMocks.push(result.request);
+      trace.push({
+        nodeName,
+        nodeType: node.type,
+        status: "waiting_mock",
+        inputItemCounts: inputSlots.map((s) => s.length),
+        pendingMock: result.request,
+        ...(runIndex !== undefined ? { runIndex } : {}),
+      });
+      // Execution along this branch pauses here; downstream nodes are simply never reached.
+    } else if (
+      node.continueOnFail ||
+      node.onError === "continueRegularOutput" ||
+      node.onError === "continueErrorOutput"
+    ) {
+      // Real n8n passes the node's own (slot-0) input items through
+      // unchanged on a whole-node throw when continuing past the error -
+      // verified against `continuesOnError()` /
+      // `nodeSuccessData = [executionData.data.main[0]]` in
+      // `workflow-execute.ts`. It does NOT emit an empty output.
+      nodeOutputs.set(nodeName, inputItems);
+      nodeSlotOutputs.set(nodeName, [inputItems]);
+      trace.push({
+        nodeName,
+        nodeType: node.type,
+        status: "error",
+        inputItemCounts: inputSlots.map((s) => s.length),
+        outputItemCounts: [inputItems.length],
+        error: result.message,
+        ...(runIndex !== undefined ? { runIndex } : {}),
+      });
+      propagate(nodeName, [inputItems]);
+    } else {
+      errors.push(`[${nodeName}] ${result.message}`);
+      trace.push({
+        nodeName,
+        nodeType: node.type,
+        status: "error",
+        inputItemCounts: inputSlots.map((s) => s.length),
+        error: result.message,
+        ...(runIndex !== undefined ? { runIndex } : {}),
+      });
+    }
+  }
+
+  /**
+   * Drives one Split In Batches node's loop to completion: real n8n
+   * re-executes the loop body once per batch (verified against
+   * `SplitInBatchesV3.node.ts` - the node itself has no iteration logic, the
+   * *engine* re-invokes it via the `loop` output's back-edge until the batch
+   * queue is empty). s8n reproduces this by resetting and re-running just
+   * the loop-body node set (`graph.loops`) once per batch, reusing the same
+   * `processNode`/`propagate` machinery as the main queue so disabled/
+   * pinned/continueOnFail/waiting_mock all behave identically inside a loop.
+   *
+   * Only a body node's *in-loop* slots (`loopInfo.internalSlots` - fed by
+   * another body node or by the SIB's own `loop` output) are cleared each
+   * iteration. A slot fed exclusively by a source outside the loop (a
+   * one-time upstream node that only ever fires once) keeps whatever it
+   * already received, instead of being wiped and starved from iteration 2
+   * onward - a real divergence an earlier version of this driver had.
+   *
+   * The SIB node itself is only ever marked `executed` once (by the caller),
+   * so a body node's connection back to the SIB is a harmless no-op propagate
+   * (the `!executed.has()` guard blocks re-queuing it) rather than a real
+   * re-execution - this node's own "iteration" is entirely internal to this
+   * function, invisible to the outer queue.
+   *
+   * `done` receives the full original item list (not whatever the body
+   * produced) because real SplitInBatches ignores the back-edge's data and
+   * hands out `context.processedItems`, which is just the concatenation of
+   * the batches it originally sent out - not the transformed data from the
+   * consuming loop body.
+   *
+   * A batch that raises an uncaught (non-continued) error, or asks for a
+   * mock, stops further iterations immediately - matching real n8n, where an
+   * uncaught error halts the whole execution rather than continuing to the
+   * next batch, and matching the main queue's own "a waiting_mock branch is
+   * simply never resumed" behavior. Critically, the caller (`processNode`)
+   * must NOT propagate anything downstream of the SIB in that case either -
+   * real n8n halts the *entire* execution, so nothing past a paused/failed
+   * loop ever runs. `LoopDriverOutcome` makes that distinction explicit
+   * (`"done"` is the only case with real output data to propagate).
+   *
+   * Known limitations (documented, not fixed): nested loops and
+   * `pairedItem` tracking through iterations. Mock-key collisions can occur
+   * whenever the same node executes in multiple loop iterations; they are
+   * avoided via `loopIterationIndex` in `ExecuteArgs` (see
+   * `http-request.ts`/`generic-fallback.ts`).
+   */
+  async function runLoopDriver(
+    sibName: string,
+    node: WorkflowNode,
+    initialItems: Item[],
+  ): Promise<LoopDriverOutcome> {
+    const loopInfo = graph.loops.get(sibName);
+    if (!loopInfo) return { kind: "done", output: [initialItems, []] };
+
+    const batchScope = buildExpressionScope({
+      currentItem: initialItems[0] ?? { json: {} },
+      itemIndex: 0,
+      inputItems: initialItems,
+      currentNodeName: sibName,
+      workflowName: runtime.workflowName,
+      workflowId: runtime.workflowId,
+      nodeOutputs,
+      nodeSlotOutputs,
+      connections: workflow.connections,
+      now: options.now,
+      timezone: workflow.settings.timezone,
+    });
+    const resolvedParams = resolveParameterValue(
+      node.parameters,
+      batchScope,
+    ) as Record<string, unknown>;
+    const rawBatchSize = Number(resolvedParams.batchSize);
+    const batchSize =
+      Number.isFinite(rawBatchSize) && rawBatchSize > 0
+        ? Math.floor(rawBatchSize)
+        : 1;
+
+    const remaining = [...initialItems];
+    let iteration = 0;
+    let haltedByError = false;
+    let haltedByMock = false;
+    // Body nodes get `executed.delete`d unconditionally at the top of every
+    // iteration, but a conditional branch not taken in the *final*
+    // iteration would otherwise leave that node absent from `executed` at
+    // the end of the whole run, wrongly flagged "unreached" by the final
+    // sweep despite having real success/error trace entries from an
+    // earlier iteration. Track everything that ran at least once and
+    // restore it below.
+    const everExecutedBodyNodes = new Set<string>();
+    while (remaining.length > 0 && iteration < MAX_LOOP_ITERATIONS) {
+      const batch = remaining.splice(0, batchSize);
+
+      for (const bodyName of loopInfo.bodyNodes) {
+        executed.delete(bodyName);
+        const slots = graph.requiredSlots.get(bodyName) ?? 1;
+        const internal = loopInfo.internalSlots.get(bodyName) ?? new Set();
+        const previousSlots = pendingData.get(bodyName) ?? [];
+        const previousFilled = filledSlots.get(bodyName) ?? new Set();
+        const nextSlots: Item[][] = [];
+        const nextFilled = new Set<number>();
+        for (let slotIndex = 0; slotIndex < slots; slotIndex++) {
+          if (internal.has(slotIndex)) {
+            nextSlots.push([]);
+          } else {
+            // Not part of the cycle: preserve whatever a one-time external
+            // source already delivered instead of wiping it.
+            nextSlots.push(previousSlots[slotIndex] ?? []);
+            if (previousFilled.has(slotIndex)) nextFilled.add(slotIndex);
+          }
+        }
+        pendingData.set(bodyName, nextSlots);
+        filledSlots.set(bodyName, nextFilled);
+      }
+      // The SIB's own input slot only ever receives harmless no-op
+      // deliveries from body nodes' back-edges (never consumed, since the
+      // SIB is already `executed` and never re-queued) - reset it each
+      // iteration too, rather than letting it grow unbounded over
+      // potentially thousands of iterations.
+      pendingData.set(sibName, [[]]);
+      filledSlots.set(sibName, new Set());
+
+      // So that `$('SIB').item`/`.all()` resolve to *this* batch while the
+      // body runs (real n8n's per-item linking sees the current loop batch,
+      // not the eventual `done` payload) - overwritten below once the loop
+      // finishes and the SIB's own real result (done=all items) is applied.
+      nodeOutputs.set(sibName, batch);
+      nodeSlotOutputs.set(sibName, [[], batch]);
+
+      const errorsBefore = errors.length;
+      const pendingMocksBefore = pendingMocks.length;
+
+      // Only seed the `loop` output (slot 1) - NOT `propagate(sibName, [[],
+      // batch])`, which would also touch slot 0 (`done`)'s destinations
+      // with an empty array and prematurely queue post-loop nodes before
+      // the loop has actually finished. See `deliverToSlot`'s doc comment.
+      deliverToSlot(sibName, 1, batch);
+      await drainBodyQueue(loopInfo.bodyNodes, iteration);
+      iteration++;
+
+      for (const bodyName of loopInfo.bodyNodes) {
+        if (executed.has(bodyName)) everExecutedBodyNodes.add(bodyName);
+      }
+
+      if (errors.length > errorsBefore) {
+        haltedByError = true;
+        break;
+      }
+      if (pendingMocks.length > pendingMocksBefore) {
+        haltedByMock = true;
+        break;
+      }
+    }
+
+    // Restore `executed` for every body node that ran in at least one
+    // iteration, even if the final iteration's branching didn't reach it -
+    // see the comment on `everExecutedBodyNodes` above.
+    for (const bodyName of everExecutedBodyNodes) executed.add(bodyName);
+
+    if (haltedByError) {
+      // The actual error was already recorded against the specific body
+      // node that threw (its own `processNode` call pushed to `errors` and
+      // `trace`) - this is a pure "stop propagating" signal, not a new
+      // failure to report again.
+      return { kind: "halted_error" };
+    }
+    if (haltedByMock) {
+      // Likewise already recorded against the specific body node that
+      // requested it - just stop.
+      return { kind: "halted_mock" };
+    }
+    if (remaining.length > 0) {
+      // Unlike the two cases above, nothing else has recorded this failure
+      // yet - the iteration-cap cutoff is attributable to the SIB/driver
+      // itself, not any specific body node.
+      return {
+        kind: "halted_new_error",
+        message: `Split In Batches "${sibName}" stopped after reaching the ${MAX_LOOP_ITERATIONS}-iteration limit; ${remaining.length} item(s) remain unprocessed`,
+      };
+    }
+
+    return { kind: "done", output: [initialItems, []] };
+  }
+
+  /**
+   * Processes only `bodyNodes` entries out of the shared `queue`, in
+   * whatever order `propagate` enqueued them, until none remain queued.
+   * Anything else `propagate` happens to queue (a stray edge leaving the
+   * loop body) is left in `queue` for the outer loop to pick up once the
+   * whole loop finishes, rather than being drained here.
+   */
+  async function drainBodyQueue(bodyNodes: Set<string>, runIndex: number) {
+    let progressed = true;
+    while (progressed) {
+      progressed = false;
+      for (let i = 0; i < queue.length; i++) {
+        const name = queue[i] as string;
+        if (bodyNodes.has(name) && !executed.has(name)) {
+          queue.splice(i, 1);
+          executed.add(name);
+          await processNode(name, runIndex);
+          progressed = true;
+          break;
+        }
+      }
+    }
+  }
+
+  while (queue.length > 0) {
+    const nodeName = queue.shift() as string;
+    if (executed.has(nodeName)) continue;
+    executed.add(nodeName);
+    await processNode(nodeName);
+  }
+
+  /**
+   * Delivers `items` to every destination of one specific output slot,
+   * queuing a destination once all its required slots have received at
+   * least one delivery (see `propagate`'s doc comment for the "OR across
+   * sources" rationale). Factored out of `propagate` so `runLoopDriver` can
+   * seed just the `loop` output (slot 1) each iteration WITHOUT also
+   * touching the `done` output (slot 0)'s destinations - calling `propagate`
+   * with `[[], batch]` would iterate *both* slots, and even an empty `[]`
+   * array for slot 0 still marks its destinations' slot as "filled" and
+   * queues them (this function's own filled/queue bookkeeping doesn't
+   * distinguish "delivered zero items" from "never delivered to") - which
+   * would prematurely queue post-loop nodes with zero real data before the
+   * loop has actually finished, real n8n's `done` firing before every
+   * batch is processed.
+   */
+  function deliverToSlot(
+    sourceName: string,
+    outputIndex: number,
+    items: Item[],
+  ) {
+    const mainConnections = workflow.connections[sourceName]?.main ?? [];
+    const destinations = mainConnections[outputIndex] ?? [];
+    for (const destination of destinations) {
+      const destSlots = pendingData.get(destination.node);
+      if (!destSlots) continue;
+      destSlots[destination.index] = [
+        ...(destSlots[destination.index] ?? []),
+        ...items,
+      ];
+      filledSlots.get(destination.node)?.add(destination.index);
+
+      const needed = graph.requiredSlots.get(destination.node) ?? 1;
+      const filled = filledSlots.get(destination.node)?.size ?? 0;
+      if (
+        filled >= needed &&
+        !executed.has(destination.node) &&
+        !queue.includes(destination.node)
+      ) {
+        queue.push(destination.node);
+      }
+    }
+  }
+
+  /**
+   * Delivers a source node's output to each connected destination slot and
+   * queues the destination once *every* required slot index has received at
+   * least one delivery. Multiple sources feeding the *same* slot (a common
+   * branch-reconvergence pattern with no explicit Merge node) only need one
+   * of them to fire - this mirrors real n8n, where waiting for literally
+   * every connected source would deadlock whenever an alternate path is
+   * legitimately never taken (e.g. an If's untaken branch, or a workflow's
+   * other, unused trigger).
+   */
+  function propagate(sourceName: string, output: Item[][]) {
+    output.forEach((items, outputIndex) => {
+      deliverToSlot(sourceName, outputIndex, items);
+    });
+  }
+
+  for (const node of workflow.nodes) {
+    if (!executed.has(node.name)) {
+      trace.push({
+        nodeName: node.name,
+        nodeType: node.type,
+        status: "unreached",
+        inputItemCounts: [],
+      });
+    }
+  }
+
+  const status: RunResult["status"] =
+    errors.length > 0
+      ? "error"
+      : pendingMocks.length > 0
+        ? "needs_mock"
+        : "success";
+
+  return {
+    status,
+    workflowName: workflow.name,
+    trace,
+    nodeOutputs: Object.fromEntries(nodeOutputs),
+    pendingMocks,
+    errors,
+  };
+}

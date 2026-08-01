@@ -1,0 +1,111 @@
+import type { ExpressionScope } from "./context.ts";
+
+/**
+ * s8n's expression convention (independent design, not copied from any
+ * third-party tool): a parameter value is treated as an expression only when
+ * the raw string starts with "=". Everything after that prefix may contain
+ * one or more `{{ ... }}` interpolation blocks evaluated as JavaScript
+ * against an `ExpressionScope`.
+ *
+ * - If the whole expression body is exactly one `{{ ... }}` block, the
+ *   evaluated value is returned as-is (preserving type: object, number...).
+ * - Otherwise every `{{ ... }}` block is stringified and substituted into
+ *   the surrounding literal text.
+ *
+ * Expressions run via `new Function`, i.e. full JS in a local, single-user
+ * CLI - there is no sandboxing beyond the explicit scope passed in. This is
+ * acceptable because s8n only ever evaluates workflow JSON the caller
+ * supplies to their own local process; it must never be pointed at
+ * untrusted, multi-tenant input.
+ */
+
+const INTERPOLATION_RE = /\{\{([\s\S]*?)\}\}/g;
+
+export class ExpressionError extends Error {
+  constructor(
+    public readonly expression: string,
+    cause: unknown,
+  ) {
+    super(
+      `Failed to evaluate expression: "${expression}" (${String((cause as Error)?.message ?? cause)})`,
+    );
+    this.name = "ExpressionError";
+  }
+}
+
+export function isExpression(raw: unknown): raw is string {
+  return typeof raw === "string" && raw.startsWith("=");
+}
+
+function runJs(expr: string, scope: ExpressionScope): unknown {
+  const argNames = Object.keys(scope);
+  const argValues = Object.values(scope);
+  try {
+    const fn = new Function(...argNames, `"use strict"; return (${expr});`);
+    return fn(...argValues);
+  } catch (cause) {
+    throw new ExpressionError(expr, cause);
+  }
+}
+
+function stringifyForInterpolation(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string") return value;
+  if (typeof value === "object") {
+    // Values with a meaningful custom toString (Luxon DateTime, Date, ...)
+    // stringify the way real n8n's template interpolation would (an ISO
+    // string), not as a JSON-quoted string; plain objects/arrays still
+    // fall back to JSON so the interpolated text stays inspectable.
+    const hasCustomToString = value.toString !== Object.prototype.toString;
+    return hasCustomToString ? String(value) : JSON.stringify(value);
+  }
+  return String(value);
+}
+
+/** Evaluates a raw `={{ ... }}` expression string against the given scope. */
+export function evaluateExpressionString(
+  raw: string,
+  scope: ExpressionScope,
+): unknown {
+  const body = raw.slice(1); // strip leading "="
+  const matches = [...body.matchAll(INTERPOLATION_RE)];
+
+  if (matches.length === 0) {
+    return body;
+  }
+
+  const isSingleFullMatch =
+    matches.length === 1 && matches[0]?.[0] === body.trim();
+  if (isSingleFullMatch) {
+    return runJs(matches[0]?.[1] ?? "", scope);
+  }
+
+  return body.replace(INTERPOLATION_RE, (_full, exprBody: string) =>
+    stringifyForInterpolation(runJs(exprBody, scope)),
+  );
+}
+
+/**
+ * Recursively resolves parameter values: strings prefixed with "=" are
+ * evaluated as expressions, arrays/objects are walked, everything else is
+ * returned unchanged.
+ */
+export function resolveParameterValue(
+  raw: unknown,
+  scope: ExpressionScope,
+): unknown {
+  if (isExpression(raw)) {
+    return evaluateExpressionString(raw, scope);
+  }
+  if (Array.isArray(raw)) {
+    return raw.map((entry) => resolveParameterValue(entry, scope));
+  }
+  if (raw !== null && typeof raw === "object") {
+    const result: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(raw)) {
+      result[key] = resolveParameterValue(value, scope);
+    }
+    return result;
+  }
+  return raw;
+}

@@ -1,0 +1,62 @@
+{
+  "name": "branch-fixture",
+  "nodes": [
+    {
+      "id": "1",
+      "name": "Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [0, 0],
+      "parameters": {}
+    },
+    {
+      "id": "2",
+      "name": "Check Amount",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 1,
+      "position": [200, 0],
+      "parameters": { "condition": "={{$json.amount > 100}}" }
+    },
+    {
+      "id": "3",
+      "name": "Mark High",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [400, -100],
+      "parameters": { "fields": [{ "name": "tier", "value": "high" }] }
+    },
+    {
+      "id": "4",
+      "name": "Mark Low",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 1,
+      "position": [400, 100],
+      "parameters": { "fields": [{ "name": "tier", "value": "low" }] }
+    },
+    {
+      "id": "5",
+      "name": "Combine",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 1,
+      "position": [600, 0],
+      "parameters": { "mode": "append" }
+    }
+  ],
+  "connections": {
+    "Trigger": {
+      "main": [[{ "node": "Check Amount", "type": "main", "index": 0 }]]
+    },
+    "Check Amount": {
+      "main": [
+        [{ "node": "Mark High", "type": "main", "index": 0 }],
+        [{ "node": "Mark Low", "type": "main", "index": 0 }]
+      ]
+    },
+    "Mark High": {
+      "main": [[{ "node": "Combine", "type": "main", "index": 0 }]]
+    },
+    "Mark Low": {
+      "main": [[{ "node": "Combine", "type": "main", "index": 1 }]]
+    }
+  }
+}
