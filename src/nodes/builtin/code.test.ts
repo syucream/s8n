@@ -13,6 +13,7 @@ function runtimeFor(): RuntimeContext {
     suggestedFields: [],
     hasExplicitInput: true,
     workflowStaticData: new Map(),
+    integrationEffects: [],
   };
 }
 

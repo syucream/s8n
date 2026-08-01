@@ -19,6 +19,17 @@ export function registerSchemaCommand(program: Command): void {
           command: "schema",
           data: {
             executedNodeTypes: NODE_TYPE_DOCS,
+            statefullyEmulatedNodeTypes: [
+              {
+                type: "n8n-nodes-base.slack",
+                enableWith: "run --emulate slack",
+                operations: [
+                  "message/post",
+                  "message/update",
+                  "user/lookupByEmail",
+                ],
+              },
+            ],
             mockedNodeTypesWithTailoredHints: allNodeTypeMockHints(),
           },
         });
@@ -43,6 +54,19 @@ export function registerSchemaCommand(program: Command): void {
             requiresMock: true,
             mockKeyConvention: "<nodeName> or <nodeName>#<itemIndex>",
             tailoredMockExample: hint.example,
+            ...(nodeType === "n8n-nodes-base.slack"
+              ? {
+                  statefulEmulation: {
+                    enableWith: "run --emulate slack",
+                    singleProcess: true,
+                    operations: [
+                      "message/post",
+                      "message/update",
+                      "user/lookupByEmail",
+                    ],
+                  },
+                }
+              : {}),
           },
         });
         return;

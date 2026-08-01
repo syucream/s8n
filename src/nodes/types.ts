@@ -1,4 +1,8 @@
 import type { ExpressionScope } from "../expression/context.ts";
+import type {
+  IntegrationEffect,
+  IntegrationRunner,
+} from "../integrations/types.ts";
 import type { Item } from "../schema/item.ts";
 import type { WorkflowNode } from "../schema/workflow.ts";
 
@@ -47,6 +51,10 @@ export interface RuntimeContext {
    * shared object, matching real in-run semantics.
    */
   workflowStaticData: Map<string, Record<string, unknown>>;
+  /** Optional, explicitly enabled local service emulator bridge. */
+  integrationRunner?: IntegrationRunner;
+  /** Verified local side effects emitted by integration emulators. */
+  integrationEffects: IntegrationEffect[];
 }
 
 export interface ExecuteArgs {

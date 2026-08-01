@@ -11,8 +11,9 @@ alwaysApply: false
   this repo; use them only as background reading. Node type identifiers like
   `n8n-nodes-base.httpRequest` are used as a compatible file-format
   convention, not copied code.
-- Quality gate: `bun run check` (English policy + biome + tsc --noEmit + bun
-  test) must pass.
+- Quality gates: `bun run check` (English policy + biome + tsc --noEmit + bun
+  test) and `bun run quality` (check + standalone build + stateful emulator +
+  live community-template verification) must pass for a release.
   Single-binary build: `bun run build` (bun build --compile).
 - Write all repository-facing prose in English, including documentation,
   comments, CLI help and error messages, schema descriptions, fixtures, and
@@ -25,7 +26,9 @@ alwaysApply: false
   for the two generic IO *primitives* every other integration node reduces to
   (HTTP Request, Webhook) where richer mock-request plumbing earns its keep.
   App-specific integration nodes (Slack, Notion, BigQuery, ...) should stay on
-  the generic fallback rather than being individually modeled.
+  the generic fallback rather than becoming registry executors. Explicit
+  stateful emulation belongs behind the generic fallback's integration runner;
+  without `--emulate`, the same node must continue to request ordinary mocks.
 - Before implementing or fixing a node type's parameter shape, verify the
   exact field names against the upstream n8n source (do not guess). Several
   simplified assumptions can be incorrect, such as Set's

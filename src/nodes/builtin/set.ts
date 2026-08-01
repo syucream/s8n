@@ -7,6 +7,23 @@ interface Assignment {
   value: unknown;
 }
 
+function parseRawJsonOutput(
+  resolvedParams: Record<string, unknown>,
+): Record<string, unknown> {
+  const raw = resolvedParams.jsonOutput;
+  if (raw !== null && typeof raw === "object" && !Array.isArray(raw)) {
+    return raw as Record<string, unknown>;
+  }
+  if (typeof raw !== "string") {
+    throw new Error("jsonOutput must resolve to a JSON object or JSON string");
+  }
+  const parsed = JSON.parse(raw.replace(/^=+/, "")) as unknown;
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("jsonOutput must contain one JSON object");
+  }
+  return parsed as Record<string, unknown>;
+}
+
 function extractAssignments(
   resolvedParams: Record<string, unknown>,
 ): Assignment[] {
@@ -49,27 +66,38 @@ function extractAssignments(
 export const setExecutor: NodeExecutor = {
   type: "n8n-nodes-base.set",
   execute: ({ node, inputItems, buildScope }) => {
-    const outputItems: Item[] = inputItems.map((item, index) => {
-      const scope = buildScope(item, index, inputItems);
-      const resolvedParams = resolveParameterValue(
-        node.parameters,
-        scope,
-      ) as Record<string, unknown>;
-      const assignments = extractAssignments(resolvedParams);
-      const keepOnlySet = resolvedParams.includeOtherFields !== true;
+    try {
+      const outputItems: Item[] = inputItems.map((item, index) => {
+        const scope = buildScope(item, index, inputItems);
+        const resolvedParams = resolveParameterValue(
+          node.parameters,
+          scope,
+        ) as Record<string, unknown>;
+        const keepOnlySet = resolvedParams.includeOtherFields !== true;
+        const baseJson = keepOnlySet ? {} : { ...item.json };
 
-      const baseJson = keepOnlySet ? {} : { ...item.json };
-      for (const assignment of assignments) {
-        baseJson[assignment.name] = assignment.value;
-      }
+        if (resolvedParams.mode === "raw") {
+          Object.assign(baseJson, parseRawJsonOutput(resolvedParams));
+        } else {
+          const assignments = extractAssignments(resolvedParams);
+          for (const assignment of assignments) {
+            baseJson[assignment.name] = assignment.value;
+          }
+        }
 
+        return {
+          json: baseJson,
+          binary: item.binary,
+          pairedItem: { item: index },
+        };
+      });
+
+      return { status: "success", output: [outputItems] };
+    } catch (cause) {
       return {
-        json: baseJson,
-        binary: item.binary,
-        pairedItem: { item: index },
+        status: "error",
+        message: `Set node "${node.name}" failed to parse raw JSON output: ${String((cause as Error)?.message ?? cause)}`,
       };
-    });
-
-    return { status: "success", output: [outputItems] };
+    }
   },
 };

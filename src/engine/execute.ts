@@ -1,5 +1,9 @@
 import { buildExpressionScope } from "../expression/context.ts";
 import { resolveParameterValue } from "../expression/evaluator.ts";
+import type {
+  IntegrationEffect,
+  IntegrationRunner,
+} from "../integrations/types.ts";
 import { extractReferencedJsonFields } from "../mock/field-hints.ts";
 import { executeGenericFallback } from "../nodes/builtin/generic-fallback.ts";
 import type { NodeRegistry } from "../nodes/registry.ts";
@@ -31,6 +35,8 @@ export interface RunOptions {
    * exactly one, it's used automatically.
    */
   startNode?: string;
+  /** Explicit local service emulation. External network I/O remains disabled. */
+  integrationRunner?: IntegrationRunner;
 }
 
 export type NodeTraceStatus =
@@ -96,6 +102,8 @@ export interface RunResult {
   nodeOutputs: Record<string, Item[]>;
   pendingMocks: PendingMockRequest[];
   errors: string[];
+  /** Stateful local integration effects that were confirmed by reading emulator state. */
+  effects: IntegrationEffect[];
   /** Populated only when status is "needs_start_node": pass one of these names via `startNode`. */
   startNodeCandidates?: StartNodeCandidate[];
 }
@@ -188,6 +196,7 @@ export async function runWorkflow(
                 `The specified startNode "${options.startNode}" is not a start node (it has incoming connections)`,
               ]
             : [],
+      effects: [],
       startNodeCandidates: executableStartNodes.map((name) => ({
         name,
         type: nodesByName.get(name)?.type ?? "",
@@ -211,6 +220,8 @@ export async function runWorkflow(
     suggestedFields,
     hasExplicitInput: options.hasExplicitInput,
     workflowStaticData: new Map(),
+    integrationRunner: options.integrationRunner,
+    integrationEffects: [],
   };
 
   const executed = new Set<string>();
@@ -743,5 +754,6 @@ export async function runWorkflow(
     nodeOutputs: Object.fromEntries(nodeOutputs),
     pendingMocks,
     errors,
+    effects: runtime.integrationEffects,
   };
 }

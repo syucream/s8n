@@ -45,7 +45,9 @@ import type { ExecuteArgs, NodeExecuteResult } from "../types.ts";
  * should be used directly rather than demanding a mock for a node that
  * has no real predecessor to mock a response for.
  */
-export function executeGenericFallback(args: ExecuteArgs): NodeExecuteResult {
+export async function executeGenericFallback(
+  args: ExecuteArgs,
+): Promise<NodeExecuteResult> {
   const {
     node,
     inputItems,
@@ -73,6 +75,25 @@ export function executeGenericFallback(args: ExecuteArgs): NodeExecuteResult {
         status: "error",
         message: `Failed to evaluate an expression in parameters for node "${node.name}": ${String((cause as Error)?.message ?? cause)}`,
       };
+    }
+
+    if (runtime.integrationRunner) {
+      try {
+        const emulated = await runtime.integrationRunner.execute(
+          node,
+          resolvedParams as Record<string, unknown>,
+        );
+        if (emulated) {
+          runtime.integrationEffects.push(emulated.effect);
+          outputItems.push(...normalizeMockToItems(emulated.output, i));
+          continue;
+        }
+      } catch (cause) {
+        return {
+          status: "error",
+          message: `Local integration emulation failed for node "${node.name}": ${String((cause as Error)?.message ?? cause)}`,
+        };
+      }
     }
 
     // Inside a Split In Batches loop body, prefer the loop's own iteration

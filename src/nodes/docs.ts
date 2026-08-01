@@ -58,6 +58,9 @@ export const NODE_TYPE_DOCS: NodeTypeDoc[] = [
         "{ id, name: string, value: any (supports = expressions), type? }; matches the upstream n8n shape",
       "fields[]":
         "s8n shorthand used when assignments is absent; each entry is { name, value }",
+      mode: '"manual" (default) | "raw"',
+      jsonOutput:
+        "JSON object string used when mode=raw; supports resolved expressions",
       includeOtherFields:
         "boolean, default false; true preserves existing fields",
     },

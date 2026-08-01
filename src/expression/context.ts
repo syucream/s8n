@@ -30,7 +30,10 @@ export interface ExpressionScope {
   $input: NodeOutputAccessor;
   /** Reference another node's last executed output by name, e.g. $('HTTP Request'). */
   $: (nodeName: string) => NodeOutputAccessor;
-  $node: { name: string };
+  $node: { name: string } & Record<
+    string,
+    { json: Record<string, unknown>; binary?: Record<string, unknown> }
+  >;
   $workflow: { name: string; id?: string };
   /** Real n8n exposes these as Luxon `DateTime` (`$now: DateTime.now()`), not plain strings - see `workflow-data-proxy.ts`. */
   $now: DateTime;
@@ -104,6 +107,23 @@ export function buildExpressionScope(
     : zone
       ? DateTime.now().setZone(zone)
       : DateTime.now();
+  const legacyNodeProxy = new Proxy(
+    { name: options.currentNodeName } as ExpressionScope["$node"],
+    {
+      get(target, property) {
+        if (property === "name") return target.name;
+        if (typeof property !== "string") return undefined;
+        const items = options.nodeOutputs.get(property);
+        if (!items) {
+          throw new Error(
+            `No output found for referenced node "${property}" (it has not run or its name does not match)`,
+          );
+        }
+        const item = items[options.itemIndex] ?? items[0] ?? { json: {} };
+        return { json: item.json, binary: item.binary };
+      },
+    },
+  );
   return {
     $json: options.currentItem.json,
     $binary: options.currentItem.binary,
@@ -137,7 +157,7 @@ export function buildExpressionScope(
       }
       return createAccessor(items, options.itemIndex);
     },
-    $node: { name: options.currentNodeName },
+    $node: legacyNodeProxy,
     $workflow: { name: options.workflowName, id: options.workflowId },
     $now: now,
     $today: now.set({ hour: 0, minute: 0, second: 0, millisecond: 0 }),

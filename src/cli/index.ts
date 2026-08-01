@@ -10,9 +10,9 @@ const program = new Command();
 program
   .name("s8n")
   .description(
-    "Simulate n8n workflows locally with all external I/O mocked. Designed for use by AI agents.",
+    "Simulate n8n workflows locally with mocked I/O and optional stateful emulators. Designed for use by AI agents.",
   )
-  .version("0.1.0");
+  .version("0.2.0");
 
 registerRunCommand(program);
 registerValidateCommand(program);

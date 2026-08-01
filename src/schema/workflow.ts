@@ -16,14 +16,17 @@ export const credentialRefSchema = z.object({
   name: z.string(),
 });
 
+export const credentialValueSchema = z.union([credentialRefSchema, z.string()]);
+
 export const workflowNodeSchema = z.object({
-  id: z.string(),
+  // Older, still-published n8n community templates can predate node IDs.
+  id: z.string().default(""),
   name: z.string(),
   type: z.string(),
   typeVersion: z.number().default(1),
   position: nodePositionSchema.default([0, 0]),
   parameters: z.record(z.string(), z.unknown()).default({}),
-  credentials: z.record(z.string(), credentialRefSchema).optional(),
+  credentials: z.record(z.string(), credentialValueSchema).optional(),
   disabled: z.boolean().default(false),
   notes: z.string().optional(),
   continueOnFail: z.boolean().default(false),

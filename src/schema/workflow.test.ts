@@ -27,6 +27,27 @@ describe("validateWorkflow", () => {
     expect(result.workflow?.nodes[0]?.position).toEqual([0, 0]);
   });
 
+  test("accepts published legacy community nodes without IDs and with string credential names", () => {
+    const result = validateWorkflow({
+      name: "Legacy community workflow",
+      nodes: [
+        {
+          name: "Slack",
+          type: "n8n-nodes-base.slack",
+          parameters: { channel: "general", text: "hello" },
+          credentials: { slackApi: "Community credential" },
+        },
+      ],
+      connections: {},
+    });
+
+    expect(result.valid).toBe(true);
+    expect(result.workflow?.nodes[0]?.id).toBe("");
+    expect(result.workflow?.nodes[0]?.credentials?.slackApi).toBe(
+      "Community credential",
+    );
+  });
+
   test("rejects missing required fields", () => {
     const result = validateWorkflow({ nodes: [] });
     expect(result.valid).toBe(false);

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import type { IntegrationRunner } from "../integrations/types.ts";
 import { createMockLookup, emptyMockLookup } from "../mock/provider.ts";
 import { createDefaultRegistry } from "../nodes/registry.ts";
 import { toItems } from "../schema/item.ts";
@@ -131,6 +132,77 @@ describe("runWorkflow", () => {
       greeting: "hi",
     });
     expect(result.nodeOutputs.Set?.[1]?.json).toEqual({ greeting: "hi" });
+  });
+
+  test("Set raw mode parses the n8n jsonOutput object used by community templates", async () => {
+    const workflow = wf({
+      name: "t",
+      nodes: [
+        {
+          id: "1",
+          name: "Trigger",
+          type: "n8n-nodes-base.manualTrigger",
+          parameters: {},
+        },
+        {
+          id: "2",
+          name: "Configure",
+          type: "n8n-nodes-base.set",
+          parameters: {
+            mode: "raw",
+            jsonOutput: '{"mapping":{"source":"price"},"enabled":true}',
+          },
+        },
+      ],
+      connections: {
+        Trigger: { main: [[{ node: "Configure", type: "main", index: 0 }]] },
+      },
+    });
+
+    const result = await runWorkflow(workflow, {
+      initialInput: toItems([{ ignored: true }]),
+      hasExplicitInput: true,
+      mocks: emptyMockLookup,
+      registry,
+    });
+
+    expect(result.status).toBe("success");
+    expect(result.nodeOutputs.Configure?.[0]?.json).toEqual({
+      mapping: { source: "price" },
+      enabled: true,
+    });
+  });
+
+  test("Set raw mode reports invalid JSON as a node error", async () => {
+    const workflow = wf({
+      name: "t",
+      nodes: [
+        {
+          id: "1",
+          name: "Trigger",
+          type: "n8n-nodes-base.manualTrigger",
+          parameters: {},
+        },
+        {
+          id: "2",
+          name: "Configure",
+          type: "n8n-nodes-base.set",
+          parameters: { mode: "raw", jsonOutput: "{invalid" },
+        },
+      ],
+      connections: {
+        Trigger: { main: [[{ node: "Configure", type: "main", index: 0 }]] },
+      },
+    });
+
+    const result = await runWorkflow(workflow, {
+      hasExplicitInput: false,
+      mocks: emptyMockLookup,
+      registry,
+    });
+
+    expect(result.status).toBe("error");
+    expect(result.errors[0]).toContain("failed to parse raw JSON output");
   });
 
   test("routes items through If into the correct branch only", async () => {
@@ -1159,6 +1231,72 @@ describe("runWorkflow", () => {
     expect(withMock.nodeOutputs["Post to Slack"]?.[0]?.json).toEqual({
       ok: true,
       ts: "123.456",
+    });
+  });
+
+  test("an explicitly enabled integration runner executes legacy Slack parameters and records a verified effect", async () => {
+    const workflow = wf({
+      name: "Community-style release notification",
+      nodes: [
+        {
+          name: "Github Trigger",
+          type: "n8n-nodes-base.githubTrigger",
+          parameters: {},
+        },
+        {
+          name: "Slack",
+          type: "n8n-nodes-base.slack",
+          parameters: {
+            channel: "release-alerts",
+            text: '=Release {{$node["Github Trigger"].json["tag"]}}',
+          },
+        },
+      ],
+      connections: {
+        "Github Trigger": {
+          main: [[{ node: "Slack", type: "main", index: 0 }]],
+        },
+      },
+    });
+    const integrationRunner: IntegrationRunner = {
+      async execute(node, parameters) {
+        if (node.type !== "n8n-nodes-base.slack") return undefined;
+        const response = {
+          ok: true,
+          channel: parameters.channel,
+          text: parameters.text,
+        };
+        return {
+          output: response,
+          effect: {
+            nodeName: node.name,
+            nodeType: node.type,
+            service: "slack",
+            operation: "chat.postMessage",
+            request: parameters,
+            response,
+            observation: { message: response },
+            verified: true,
+          },
+        };
+      },
+      async close() {},
+    };
+
+    const result = await runWorkflow(workflow, {
+      initialInput: toItems([{ tag: "v0.2.0" }]),
+      hasExplicitInput: true,
+      mocks: emptyMockLookup,
+      registry,
+      integrationRunner,
+    });
+
+    expect(result.status).toBe("success");
+    expect(result.effects).toHaveLength(1);
+    expect(result.effects[0]?.verified).toBe(true);
+    expect(result.effects[0]?.request).toMatchObject({
+      channel: "release-alerts",
+      text: "Release v0.2.0",
     });
   });
 

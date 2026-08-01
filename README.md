@@ -3,8 +3,12 @@
 s8n is a local CLI simulator for n8n workflow JSON. It runs without an n8n
 server and never performs real external I/O.
 
-- External integrations are mocked instead of making HTTP requests or waiting
-  for webhooks.
+- External integrations use agent-supplied mocks by default. Supported
+  integrations can instead use opt-in, stateful in-memory emulation.
+- `--emulate slack` creates channels, posts and updates messages, preserves
+  threads, and looks up users inside the same s8n process. It reads state back
+  before reporting a side effect as verified; no Slack account, token, local
+  server, extra process, or network request is used.
 - The CLI contains no AI features. It is designed for an external AI agent to
   run a workflow, inspect missing mock requests, generate synthetic data, and
   rerun the workflow.
@@ -37,7 +41,7 @@ by parsing that envelope.
 Simulate a workflow:
 
 ```bash
-s8n run workflow.json [--input input.json] [--mocks mocks.json] [--now 2026-01-01T00:00:00Z] [--start-node "Node Name"]
+s8n run workflow.json [--input input.json] [--mocks mocks.json] [--emulate slack] [--now 2026-01-01T00:00:00Z] [--start-node "Node Name"]
 ```
 
 - `--input`: Initial items passed to the trigger node. Accepts one JSON object
@@ -48,6 +52,9 @@ s8n run workflow.json [--input input.json] [--mocks mocks.json] [--now 2026-01-0
   expression evaluation.
 - `--start-node`: Selects the entry point when multiple nodes have no incoming
   connections. Like n8n, s8n activates only one trigger per execution.
+- `--emulate slack`: Uses the stateful, single-process Slack emulator for
+  supported Slack operations. Unsupported Slack operations and every other
+  integration still use `--mocks`.
 
 `data.status` is one of:
 
@@ -66,7 +73,22 @@ A typical agent loop is:
 3. If the status is `needs_mock`, use `expectedShape` to generate synthetic
    data and save it under the requested key in `mocks.json`.
 4. Rerun with `--mocks mocks.json`, repeating when more mocks are requested.
-5. On `success`, inspect each node's final output in `data.nodeOutputs`.
+5. On `success`, inspect each node's final output in `data.nodeOutputs` and
+   any verified integration side effects in `data.effects`.
+
+### Stateful Slack example
+
+```bash
+./dist/s8n run examples/slack-release-notification.workflow.json \
+  --input examples/slack-release-notification.input.json \
+  --emulate slack
+```
+
+The result includes a `data.effects[]` record with the resolved request,
+emulator response, state read-back under `observation`, and `verified: true`.
+Supported major operations are message post (including rich fields and thread
+replies), message update, and user lookup by email. Channel names not already
+present in the local workspace are created automatically.
 
 ### `s8n validate <workflowFile>`
 
@@ -95,10 +117,15 @@ workflow exports. It also preserves n8n node type identifiers such as
 - HTTP Request returns mock responses and performs no network communication.
 - Every unmodeled node type, including integration nodes such as Slack, Gmail,
   Notion, BigQuery, and LangChain nodes, falls back to external-I/O mocking
-  instead of failing.
+  instead of failing. Slack's supported operations may opt into stateful
+  emulation through `--emulate slack` without changing default behavior.
 - Expressions support `$json`, `$input`, `$('NodeName')`, `$now`, `$today`,
-  `$node`, `$workflow`, and `$itemIndex`. `$now` and `$today` are Luxon
-  `DateTime` objects, so methods such as `.minus()` and `.toFormat()` work.
+  modern `$node`, legacy `$node["Node Name"].json`, `$workflow`, and
+  `$itemIndex`. `$now` and `$today` are Luxon `DateTime` objects, so methods
+  such as `.minus()` and `.toFormat()` work.
+- Published legacy workflow templates without per-node IDs and with string
+  credential names are accepted. Credentials are descriptive only and never
+  used for real authentication.
 - Code nodes support `$getWorkflowStaticData(type)` within one execution. State
   is not persisted across executions.
 
@@ -120,7 +147,16 @@ bun run lint:fix       # biome check --write .
 bun run typecheck      # tsc --noEmit
 bun run test           # bun test
 bun run build          # compile dist/s8n
+bun run quality:emulator # message, thread, user, and Vercel Labs oracle checks
+bun run quality:community # fetch and execute two official n8n templates
+bun run quality        # complete release gate, including standalone build
 ```
+
+`quality:community` fetches currently published workflows from the official n8n
+template API at test time and never vendors third-party workflow data. It
+executes template 371 with synthetic GitHub release input and requires the
+resolved Slack message to be present in emulator state. It also executes
+template 14034 and checks exact string, number, boolean, and date conversions.
 
 Files under `fixtures/` are original test workflows. Files under `examples/`
 are original documentation examples. They contain no copied private workflow

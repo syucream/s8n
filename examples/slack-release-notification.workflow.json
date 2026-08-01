@@ -1,0 +1,43 @@
+{
+  "name": "Stateful Slack release notification",
+  "nodes": [
+    {
+      "id": "trigger",
+      "name": "Release Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "position": [0, 0],
+      "parameters": {}
+    },
+    {
+      "id": "slack",
+      "name": "Post Release",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.6,
+      "position": [240, 0],
+      "parameters": {
+        "resource": "message",
+        "operation": "post",
+        "select": "channel",
+        "channelId": {
+          "mode": "name",
+          "value": "s8n-release-alerts"
+        },
+        "messageType": "text",
+        "text": "=Released {{$json.repository}} {{$json.tag}}"
+      }
+    }
+  ],
+  "connections": {
+    "Release Webhook": {
+      "main": [
+        [
+          {
+            "node": "Post Release",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

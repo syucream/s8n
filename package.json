@@ -1,6 +1,6 @@
 {
   "name": "s8n",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "module": "src/cli/index.ts",
   "type": "module",
   "private": true,
@@ -15,11 +15,15 @@
     "lint": "biome check .",
     "lint:fix": "biome check --write .",
     "check:english": "bun run scripts/check-english.ts",
-    "check": "bun run check:english && bun run lint && bun run typecheck && bun run test"
+    "check": "bun run check:english && bun run lint && bun run typecheck && bun run test",
+    "quality:emulator": "bun run scripts/emulator-quality-gate.ts",
+    "quality:community": "bun run scripts/community-quality-gate.ts",
+    "quality": "bun run check && bun run build && bun run quality:emulator && bun run quality:community"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.3",
     "@types/bun": "latest",
+    "emulate": "^0.9.0",
     "typescript": "^5"
   },
   "dependencies": {
