@@ -41,7 +41,7 @@ by parsing that envelope.
 Simulate a workflow:
 
 ```bash
-s8n run workflow.json [--input input.json] [--mocks mocks.json] [--emulate slack] [--now 2026-01-01T00:00:00Z] [--start-node "Node Name"]
+s8n run workflow.json [--input input.json] [--mocks mocks.json] [--emulate slack] [--now 2026-01-01T00:00:00Z] [--start-node "Node Name"] [--execution-log] [--truncate-data 10]
 ```
 
 - `--input`: Initial items passed to the trigger node. Accepts one JSON object
@@ -52,6 +52,11 @@ s8n run workflow.json [--input input.json] [--mocks mocks.json] [--emulate slack
   expression evaluation.
 - `--start-node`: Selects the entry point when multiple nodes have no incoming
   connections. Like n8n, s8n activates only one trigger per execution.
+- `--execution-log`: Returns an n8n-like `data.resultData.runData` object with
+  each node run's actual `data.main` output, input source, execution order,
+  timing, and status.
+- `--truncate-data`: Limits the retained items in each node output when
+  `--execution-log` is enabled. Original item counts remain in metadata.
 - `--emulate slack`: Uses the stateful, single-process Slack emulator for
   supported Slack operations. Unsupported Slack operations and every other
   integration still use `--mocks`.
@@ -75,6 +80,15 @@ A typical agent loop is:
 4. Rerun with `--mocks mocks.json`, repeating when more mocks are requested.
 5. On `success`, inspect each node's final output in `data.nodeOutputs` and
    any verified integration side effects in `data.effects`.
+
+To inspect the run in the same node-indexed shape as an n8n execution result:
+
+```bash
+s8n run workflow.json --mocks mocks.json --execution-log --truncate-data 10
+```
+
+The execution is available at `data.data.resultData.runData` in the standard
+s8n command envelope.
 
 ### Stateful Slack example
 
@@ -148,7 +162,8 @@ bun run typecheck      # tsc --noEmit
 bun run test           # bun test
 bun run build          # compile dist/s8n
 bun run quality:emulator # message, thread, user, and Vercel Labs oracle checks
-bun run quality:community # fetch and execute two official n8n templates
+bun run quality:community # trusted-only legacy two-template execution check
+bun run quality:corpus    # safely simulate a fixed corpus of 100 public templates
 bun run quality        # complete release gate, including standalone build
 ```
 
@@ -157,6 +172,14 @@ template API at test time and never vendors third-party workflow data. It
 executes template 371 with synthetic GitHub release input and requires the
 resolved Slack message to be present in emulator state. It also executes
 template 14034 and checks exact string, number, boolean, and date conversions.
+Because this legacy check executes downloaded expressions and Code-node
+JavaScript, it is no longer part of `bun run quality` and must only be run when
+the fetched definitions have been reviewed and trusted.
+
+`quality:corpus` fetches a reproducible snapshot of 100 highly-trending public
+templates and reports builtin versus mocked node visits. Because downloaded
+workflow JavaScript is untrusted, the corpus gate neutralizes expressions and
+mocks Code nodes instead of evaluating remote code in the local process.
 
 Files under `fixtures/` are original test workflows. Files under `examples/`
 are original documentation examples. They contain no copied private workflow

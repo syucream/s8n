@@ -40,6 +40,20 @@ function combineByPosition(inputSlots: Item[][]): Item[] {
   return combined;
 }
 
+function combineAll(inputSlots: Item[][]): Item[] {
+  let combinations: Item[] = [{ json: {} }];
+  for (const slot of inputSlots) {
+    if (slot.length === 0) return [];
+    combinations = combinations.flatMap((combined, index) =>
+      slot.map((item) => ({
+        json: { ...combined.json, ...item.json },
+        pairedItem: { item: index },
+      })),
+    );
+  }
+  return combinations;
+}
+
 /** Inner-join style match on the configured field pairs (real n8n also supports outer-join modes; not implemented here). */
 function combineByFields(
   inputSlots: Item[][],
@@ -76,8 +90,10 @@ function combineByFields(
  *     `parameters.mergeByFields.values[]` ({field1, field2} pairs), 2 inputs only.
  *   - `combineByPosition`: zips items positionally, shallow-merging json.
  *   - unset `combineBy` also falls back to positional zipping.
- * Unimplemented `mode`/`combineBy` values (`chooseBranch`, `combineBySql`)
- * return an explicit error rather than silently falling back to append.
+ * - `chooseBranch`: waits for all configured inputs, then passes through the
+ *   selected input (`parameters.output`, default `input1`).
+ * Unimplemented `combineBy` values (`combineBySql`) return an explicit error
+ * rather than silently falling back to append.
  */
 export const mergeExecutor: NodeExecutor = {
   type: "n8n-nodes-base.merge",
@@ -106,16 +122,27 @@ export const mergeExecutor: NodeExecutor = {
       if (combineBy === "combineByPosition") {
         return { status: "success", output: [combineByPosition(inputSlots)] };
       }
+      if (combineBy === "combineAll") {
+        return { status: "success", output: [combineAll(inputSlots)] };
+      }
       return {
         status: "error",
         message: `Merge node "${node.name}" uses unsupported combineBy="${combineBy}" (for example, combineBySql)`,
       };
     }
 
+    if (mode === "chooseBranch") {
+      const selected = String(resolvedParams.output ?? "input1");
+      const match = selected.match(/^(?:input)?(\d+)$/i);
+      const oneBasedIndex = match ? Number(match[1]) : 1;
+      const slotIndex = Math.max(0, oneBasedIndex - 1);
+      return { status: "success", output: [inputSlots[slotIndex] ?? []] };
+    }
+
     if (mode !== "append") {
       return {
         status: "error",
-        message: `Merge node "${node.name}" uses unsupported mode="${mode}" (for example, chooseBranch)`,
+        message: `Merge node "${node.name}" uses unsupported mode="${mode}"`,
       };
     }
 

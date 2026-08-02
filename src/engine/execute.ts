@@ -74,6 +74,22 @@ export interface NodeTraceEntry {
    * the only place `trace` can contain more than one entry per node name.
    */
   runIndex?: number;
+  /** n8n-compatible epoch timestamp for the start of this node run. */
+  startTime?: number;
+  /** Wall-clock duration of this node run in milliseconds. */
+  executionTime?: number;
+  /** Monotonic execution order across all node runs in this workflow. */
+  executionIndex?: number;
+  /** n8n-like status for consumers rendering execution logs. */
+  executionStatus?: "success" | "error" | "waiting" | "skipped";
+  /** Upstream node runs that supplied this node's main inputs. */
+  source?: Array<{
+    previousNode: string;
+    previousNodeOutput: number;
+    previousNodeRun: number;
+  }>;
+  /** Exact per-output-slot items produced by this run. */
+  data?: { main: Item[][] };
 }
 
 /**
@@ -143,9 +159,14 @@ export async function runWorkflow(
 
   const pendingData = new Map<string, Item[][]>();
   const filledSlots = new Map<string, Set<number>>();
+  const pendingSources = new Map<
+    string,
+    Map<number, NonNullable<NodeTraceEntry["source"]>>
+  >();
   const nodeOutputs = new Map<string, Item[]>();
   const nodeSlotOutputs = new Map<string, Item[][]>();
   const trace: NodeTraceEntry[] = [];
+  let executionIndex = 0;
   const pendingMocks: PendingMockRequest[] = [];
   const errors: string[] = [];
   for (const node of workflow.nodes) {
@@ -155,6 +176,7 @@ export async function runWorkflow(
       Array.from({ length: slots }, () => []),
     );
     filledSlots.set(node.name, new Set());
+    pendingSources.set(node.name, new Map());
   }
 
   const isNonExecutable = (name: string) =>
@@ -253,6 +275,16 @@ export async function runWorkflow(
 
   const MAX_LOOP_ITERATIONS = 10_000;
 
+  function sourcesForNode(
+    nodeName: string,
+  ): NonNullable<NodeTraceEntry["source"]> {
+    return [...(pendingSources.get(nodeName)?.values() ?? [])].flat();
+  }
+
+  function cloneMainData(output: Item[][]): Item[][] {
+    return structuredClone(output);
+  }
+
   /**
    * Runs the full dequeue-time handling for one node: disabled/pinned/
    * empty-input short-circuits, then either a normal executor call or (for a
@@ -265,20 +297,59 @@ export async function runWorkflow(
     const node = nodesByName.get(nodeName);
     if (!node) return;
 
+    const startTime = Date.now();
+    const performanceStart = performance.now();
+    const pushRunTrace = (
+      entry: Omit<
+        NodeTraceEntry,
+        | "startTime"
+        | "executionTime"
+        | "executionIndex"
+        | "executionStatus"
+        | "source"
+        | "data"
+      >,
+      output?: Item[][],
+    ) => {
+      const executionStatus: NonNullable<NodeTraceEntry["executionStatus"]> =
+        entry.status === "success" || entry.status === "pinned"
+          ? "success"
+          : entry.status === "error"
+            ? "error"
+            : entry.status === "waiting_mock"
+              ? "waiting"
+              : "skipped";
+      trace.push({
+        ...entry,
+        startTime,
+        executionTime: Math.max(
+          0,
+          Math.round(performance.now() - performanceStart),
+        ),
+        executionIndex: executionIndex++,
+        executionStatus,
+        source: sourcesForNode(nodeName),
+        ...(output ? { data: { main: cloneMainData(output) } } : {}),
+      });
+    };
+
     const inputSlots = pendingData.get(nodeName) ?? [[]];
     const inputItems = inputSlots[0] ?? [];
 
     if (node.disabled) {
       nodeOutputs.set(nodeName, inputItems);
       nodeSlotOutputs.set(nodeName, [inputItems]);
-      trace.push({
-        nodeName,
-        nodeType: node.type,
-        status: "skipped_disabled",
-        inputItemCounts: inputSlots.map((s) => s.length),
-        outputItemCounts: [inputItems.length],
-        ...(runIndex !== undefined ? { runIndex } : {}),
-      });
+      pushRunTrace(
+        {
+          nodeName,
+          nodeType: node.type,
+          status: "skipped_disabled",
+          inputItemCounts: inputSlots.map((s) => s.length),
+          outputItemCounts: [inputItems.length],
+          ...(runIndex !== undefined ? { runIndex } : {}),
+        },
+        [inputItems],
+      );
       propagate(nodeName, [inputItems]);
       return;
     }
@@ -288,14 +359,17 @@ export async function runWorkflow(
       const pinnedItems = toItems(pinned);
       nodeOutputs.set(nodeName, pinnedItems);
       nodeSlotOutputs.set(nodeName, [pinnedItems]);
-      trace.push({
-        nodeName,
-        nodeType: node.type,
-        status: "pinned",
-        inputItemCounts: inputSlots.map((s) => s.length),
-        outputItemCounts: [pinnedItems.length],
-        ...(runIndex !== undefined ? { runIndex } : {}),
-      });
+      pushRunTrace(
+        {
+          nodeName,
+          nodeType: node.type,
+          status: "pinned",
+          inputItemCounts: inputSlots.map((s) => s.length),
+          outputItemCounts: [pinnedItems.length],
+          ...(runIndex !== undefined ? { runIndex } : {}),
+        },
+        [pinnedItems],
+      );
       propagate(nodeName, [pinnedItems]);
       return;
     }
@@ -320,7 +394,7 @@ export async function runWorkflow(
       !node.alwaysOutputData &&
       nodeName !== activeStartNode
     ) {
-      trace.push({
+      pushRunTrace({
         nodeName,
         nodeType: node.type,
         status: "skipped_no_data",
@@ -347,7 +421,7 @@ export async function runWorkflow(
         if (loopOutcome.kind === "halted_new_error") {
           errors.push(`[${nodeName}] ${loopOutcome.message}`);
         }
-        trace.push({
+        pushRunTrace({
           nodeName,
           nodeType: node.type,
           status: loopOutcome.kind === "halted_mock" ? "waiting_mock" : "error",
@@ -402,18 +476,21 @@ export async function runWorkflow(
     if (result.status === "success") {
       nodeOutputs.set(nodeName, result.output.flat());
       nodeSlotOutputs.set(nodeName, result.output);
-      trace.push({
-        nodeName,
-        nodeType: node.type,
-        status: "success",
-        inputItemCounts: inputSlots.map((s) => s.length),
-        outputItemCounts: result.output.map((slot) => slot.length),
-        ...(runIndex !== undefined ? { runIndex } : {}),
-      });
+      pushRunTrace(
+        {
+          nodeName,
+          nodeType: node.type,
+          status: "success",
+          inputItemCounts: inputSlots.map((s) => s.length),
+          outputItemCounts: result.output.map((slot) => slot.length),
+          ...(runIndex !== undefined ? { runIndex } : {}),
+        },
+        result.output,
+      );
       propagate(nodeName, result.output);
     } else if (result.status === "waiting_mock") {
       pendingMocks.push(result.request);
-      trace.push({
+      pushRunTrace({
         nodeName,
         nodeType: node.type,
         status: "waiting_mock",
@@ -434,19 +511,22 @@ export async function runWorkflow(
       // `workflow-execute.ts`. It does NOT emit an empty output.
       nodeOutputs.set(nodeName, inputItems);
       nodeSlotOutputs.set(nodeName, [inputItems]);
-      trace.push({
-        nodeName,
-        nodeType: node.type,
-        status: "error",
-        inputItemCounts: inputSlots.map((s) => s.length),
-        outputItemCounts: [inputItems.length],
-        error: result.message,
-        ...(runIndex !== undefined ? { runIndex } : {}),
-      });
+      pushRunTrace(
+        {
+          nodeName,
+          nodeType: node.type,
+          status: "error",
+          inputItemCounts: inputSlots.map((s) => s.length),
+          outputItemCounts: [inputItems.length],
+          error: result.message,
+          ...(runIndex !== undefined ? { runIndex } : {}),
+        },
+        [inputItems],
+      );
       propagate(nodeName, [inputItems]);
     } else {
       errors.push(`[${nodeName}] ${result.message}`);
-      trace.push({
+      pushRunTrace({
         nodeName,
         nodeType: node.type,
         status: "error",
@@ -554,8 +634,13 @@ export async function runWorkflow(
         const internal = loopInfo.internalSlots.get(bodyName) ?? new Set();
         const previousSlots = pendingData.get(bodyName) ?? [];
         const previousFilled = filledSlots.get(bodyName) ?? new Set();
+        const previousSources = pendingSources.get(bodyName) ?? new Map();
         const nextSlots: Item[][] = [];
         const nextFilled = new Set<number>();
+        const nextSources = new Map<
+          number,
+          NonNullable<NodeTraceEntry["source"]>
+        >();
         for (let slotIndex = 0; slotIndex < slots; slotIndex++) {
           if (internal.has(slotIndex)) {
             nextSlots.push([]);
@@ -564,10 +649,13 @@ export async function runWorkflow(
             // source already delivered instead of wiping it.
             nextSlots.push(previousSlots[slotIndex] ?? []);
             if (previousFilled.has(slotIndex)) nextFilled.add(slotIndex);
+            const sources = previousSources.get(slotIndex);
+            if (sources) nextSources.set(slotIndex, sources);
           }
         }
         pendingData.set(bodyName, nextSlots);
         filledSlots.set(bodyName, nextFilled);
+        pendingSources.set(bodyName, nextSources);
       }
       // The SIB's own input slot only ever receives harmless no-op
       // deliveries from body nodes' back-edges (never consumed, since the
@@ -576,6 +664,7 @@ export async function runWorkflow(
       // potentially thousands of iterations.
       pendingData.set(sibName, [[]]);
       filledSlots.set(sibName, new Set());
+      pendingSources.set(sibName, new Map());
 
       // So that `$('SIB').item`/`.all()` resolve to *this* batch while the
       // body runs (real n8n's per-item linking sees the current loop batch,
@@ -700,6 +789,27 @@ export async function runWorkflow(
         ...items,
       ];
       filledSlots.get(destination.node)?.add(destination.index);
+      const sourceRuns = trace.filter(
+        (entry) =>
+          entry.nodeName === sourceName && entry.executionIndex !== undefined,
+      ).length;
+      const destinationSources = pendingSources.get(destination.node);
+      const slotSources = destinationSources?.get(destination.index) ?? [];
+      const source = {
+        previousNode: sourceName,
+        previousNodeOutput: outputIndex,
+        previousNodeRun: Math.max(0, sourceRuns - 1),
+      };
+      if (
+        !slotSources.some(
+          (existing) =>
+            existing.previousNode === source.previousNode &&
+            existing.previousNodeOutput === source.previousNodeOutput &&
+            existing.previousNodeRun === source.previousNodeRun,
+        )
+      ) {
+        destinationSources?.set(destination.index, [...slotSources, source]);
+      }
 
       const needed = graph.requiredSlots.get(destination.node) ?? 1;
       const filled = filledSlots.get(destination.node)?.size ?? 0;

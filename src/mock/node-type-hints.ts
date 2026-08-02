@@ -175,6 +175,15 @@ const NODE_TYPE_MOCK_HINTS: Record<string, NodeTypeMockHint> = {
       snippet: "Hello",
     },
   },
+  "n8n-nodes-base.emailSend": {
+    description: "The delivery result from an SMTP email send operation.",
+    example: {
+      accepted: ["recipient@example.com"],
+      rejected: [],
+      messageId: "<s8n-sample@example.com>",
+      response: "250 Message accepted",
+    },
+  },
   "n8n-nodes-base.emailReadImap": {
     description: "An email received over IMAP.",
     example: {
@@ -262,6 +271,31 @@ const NODE_TYPE_MOCK_HINTS: Record<string, NodeTypeMockHint> = {
   "n8n-nodes-base.twitter": {
     description: "An X (Twitter) API v2 response.",
     example: { data: { id: "1234567890", text: "Example tweet" } },
+  },
+  "n8n-nodes-base.telegram": {
+    description: "A Telegram Bot API message response.",
+    example: {
+      ok: true,
+      result: {
+        message_id: 1,
+        date: 1785628800,
+        chat: { id: 123456789, type: "private" },
+        text: "Hello from s8n",
+      },
+    },
+  },
+  "n8n-nodes-base.telegramTrigger": {
+    description: "A Telegram Bot API update received by a trigger.",
+    example: {
+      update_id: 1,
+      message: {
+        message_id: 1,
+        date: 1785628800,
+        chat: { id: 123456789, type: "private" },
+        from: { id: 123456789, first_name: "Sample" },
+        text: "Representative workflow sample",
+      },
+    },
   },
   "n8n-nodes-base.miro": {
     description: "A Miro API board or item object.",
@@ -411,6 +445,11 @@ const NODE_TYPE_MOCK_HINTS: Record<string, NodeTypeMockHint> = {
   "@n8n/n8n-nodes-langchain.lmChatAnthropic": {
     description: "An Anthropic Claude Chat Model response.",
     example: { content: "Example response" },
+  },
+  "@n8n/n8n-nodes-langchain.lmChatOpenRouter": {
+    description:
+      "An OpenRouter chat-model response, normally consumed through an Agent or Chain.",
+    example: { content: "Example response from an OpenRouter model" },
   },
   "@n8n/n8n-nodes-langchain.outputParserStructured": {
     description:

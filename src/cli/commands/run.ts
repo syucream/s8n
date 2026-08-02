@@ -1,5 +1,6 @@
 import type { Command } from "commander";
 import { runWorkflow } from "../../engine/execute.ts";
+import { toN8nExecutionLog } from "../../format/n8n-execution.ts";
 import { printEnvelope } from "../../format/output.ts";
 import { EmulatorIntegrationRunner } from "../../integrations/emulator.ts";
 import { createMockLookup, emptyMockLookup } from "../../mock/provider.ts";
@@ -15,6 +16,8 @@ interface RunOpts {
   now?: string;
   startNode?: string;
   emulate?: string;
+  executionLog?: boolean;
+  truncateData?: string;
 }
 
 export function registerRunCommand(program: Command): void {
@@ -42,6 +45,14 @@ export function registerRunCommand(program: Command): void {
     .option(
       "--emulate <services>",
       'Run supported integrations against stateful local emulators (currently "slack")',
+    )
+    .option(
+      "--execution-log",
+      "Output n8n-like execution metadata and resultData.runData",
+    )
+    .option(
+      "--truncate-data <count>",
+      "Limit items retained per node output in --execution-log",
     )
     .action(async (workflowFile: string, opts: RunOpts) => {
       const loaded = await loadWorkflowFile(workflowFile);
@@ -106,6 +117,20 @@ export function registerRunCommand(program: Command): void {
         process.exitCode = 1;
         return;
       }
+      const truncateData =
+        opts.truncateData === undefined ? undefined : Number(opts.truncateData);
+      if (
+        truncateData !== undefined &&
+        (!Number.isInteger(truncateData) || truncateData < 0)
+      ) {
+        printEnvelope({
+          ok: false,
+          command: "run",
+          error: `--truncate-data must be a non-negative integer: "${opts.truncateData}"`,
+        });
+        process.exitCode = 1;
+        return;
+      }
 
       let integrationRunner: EmulatorIntegrationRunner | undefined;
       try {
@@ -139,7 +164,13 @@ export function registerRunCommand(program: Command): void {
         printEnvelope({
           ok: result.status === "success" || result.status === "needs_mock",
           command: "run",
-          data: result,
+          data: opts.executionLog
+            ? toN8nExecutionLog(result, {
+                workflowId: loaded.workflow.id,
+                startNode: opts.startNode,
+                truncateData,
+              })
+            : result,
         });
         if (result.status === "error" || result.status === "needs_start_node")
           process.exitCode = 1;

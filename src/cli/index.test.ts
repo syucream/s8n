@@ -41,6 +41,28 @@ describe("s8n CLI", () => {
     expect(parsed.data.pendingMocks.length).toBeGreaterThan(0);
   });
 
+  test("run --execution-log emits n8n-like resultData.runData with node items", async () => {
+    const { stdout, exitCode } = await runCli([
+      "run",
+      path.join(FIXTURES_DIR, "basic.workflow.json"),
+      "--execution-log",
+      "--truncate-data",
+      "1",
+    ]);
+    expect(exitCode).toBe(0);
+    const parsed = JSON.parse(stdout);
+    expect(parsed.data.status).toBe("success");
+    expect(parsed.data.data.resultData.runData.Trigger[0]).toMatchObject({
+      executionIndex: 0,
+      executionStatus: "success",
+      source: [],
+    });
+    expect(
+      parsed.data.data.resultData.runData["Set Message"][0].data.main[0][0]
+        .json,
+    ).toEqual({ message: "Hello, world!" });
+  });
+
   test("validate reports schema issues for a malformed workflow file", async () => {
     const tmpFile = path.join(
       FIXTURES_DIR,

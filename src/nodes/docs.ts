@@ -103,7 +103,7 @@ export const NODE_TYPE_DOCS: NodeTypeDoc[] = [
   {
     type: "n8n-nodes-base.merge",
     summary:
-      "Combines multiple input slots. append concatenates items. combine supports an inner join through combineByFields or positional merging through combineByPosition. combineBySql and chooseBranch are unsupported.",
+      "Combines multiple input slots. append concatenates items. combine supports an inner join through combineByFields, positional merging through combineByPosition, or a Cartesian product through combineAll. chooseBranch passes through a selected input. combineBySql is unsupported.",
     parametersShape: {
       mode: '"append" | "combine"',
       combineBy: '"combineByFields" (default) | "combineByPosition"',

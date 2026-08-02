@@ -51,6 +51,36 @@ describe("runWorkflow", () => {
     expect(result.status).toBe("success");
     // Real n8n Set defaults `includeOtherFields` to false: only assigned fields survive.
     expect(result.nodeOutputs.Set?.[0]?.json).toEqual({ greeting: "Hi Alice" });
+    const triggerRun = result.trace.find(
+      (entry) => entry.nodeName === "Trigger" && entry.status === "success",
+    );
+    const setRun = result.trace.find(
+      (entry) => entry.nodeName === "Set" && entry.status === "success",
+    );
+    expect(triggerRun).toMatchObject({
+      executionIndex: 0,
+      executionStatus: "success",
+      source: [],
+      data: {
+        main: [[{ json: { name: "Alice" }, pairedItem: { item: 0 } }]],
+      },
+    });
+    expect(triggerRun?.startTime).toBeNumber();
+    expect(triggerRun?.executionTime).toBeNumber();
+    expect(setRun).toMatchObject({
+      executionIndex: 1,
+      executionStatus: "success",
+      source: [
+        {
+          previousNode: "Trigger",
+          previousNodeOutput: 0,
+          previousNodeRun: 0,
+        },
+      ],
+      data: {
+        main: [[{ json: { greeting: "Hi Alice" }, pairedItem: { item: 0 } }]],
+      },
+    });
   });
 
   test("Set keeps existing fields when includeOtherFields is true", async () => {
@@ -394,6 +424,101 @@ describe("runWorkflow", () => {
       "a",
       "b",
     ]);
+  });
+
+  test("Merge chooseBranch passes through the selected input", async () => {
+    const workflow = wf({
+      name: "t",
+      nodes: [
+        {
+          id: "1",
+          name: "Trigger",
+          type: "n8n-nodes-base.manualTrigger",
+          parameters: {},
+        },
+        {
+          id: "2",
+          name: "Left",
+          type: "n8n-nodes-base.set",
+          parameters: { fields: [{ name: "branch", value: "left" }] },
+        },
+        {
+          id: "3",
+          name: "Right",
+          type: "n8n-nodes-base.set",
+          parameters: { fields: [{ name: "branch", value: "right" }] },
+        },
+        {
+          id: "4",
+          name: "Choose",
+          type: "n8n-nodes-base.merge",
+          parameters: { mode: "chooseBranch", output: "input2" },
+        },
+      ],
+      connections: {
+        Trigger: {
+          main: [
+            [
+              { node: "Left", type: "main", index: 0 },
+              { node: "Right", type: "main", index: 0 },
+            ],
+          ],
+        },
+        Left: { main: [[{ node: "Choose", type: "main", index: 0 }]] },
+        Right: { main: [[{ node: "Choose", type: "main", index: 1 }]] },
+      },
+    });
+
+    const result = await runWorkflow(workflow, {
+      hasExplicitInput: false,
+      mocks: emptyMockLookup,
+      registry,
+    });
+
+    expect(result.status).toBe("success");
+    expect(result.nodeOutputs.Choose?.map((item) => item.json.branch)).toEqual([
+      "right",
+    ]);
+  });
+
+  test("Merge combineAll produces every input combination", async () => {
+    const workflow = wf({
+      name: "t",
+      nodes: [
+        {
+          id: "1",
+          name: "Trigger",
+          type: "n8n-nodes-base.manualTrigger",
+          parameters: {},
+        },
+        {
+          id: "2",
+          name: "Choose",
+          type: "n8n-nodes-base.merge",
+          parameters: { mode: "combine", combineBy: "combineAll" },
+        },
+      ],
+      connections: {
+        Trigger: {
+          main: [
+            [
+              { node: "Choose", type: "main", index: 0 },
+              { node: "Choose", type: "main", index: 1 },
+            ],
+          ],
+        },
+      },
+    });
+
+    const result = await runWorkflow(workflow, {
+      initialInput: toItems([{ value: "a" }, { value: "b" }]),
+      hasExplicitInput: true,
+      mocks: emptyMockLookup,
+      registry,
+    });
+
+    expect(result.status).toBe("success");
+    expect(result.nodeOutputs.Choose).toHaveLength(4);
   });
 
   test("Merge's own expression scope sees the real first item on slot 0, not a hardcoded empty object", async () => {
