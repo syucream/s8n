@@ -20,9 +20,9 @@ server and never performs real external I/O.
 - Supported node fields, defaults, and branch behavior are implemented against
   upstream n8n source rather than inferred parameter shapes.
 
-See [NODE_SUPPORT.md](NODE_SUPPORT.md) for the exact support tiers, the current
-built-in node list, emulator coverage, all three data-injection mechanisms, and
-the fallback behavior for every other node.
+See [the node support guide](docs/node-support.md) for the exact support tiers,
+the current built-in node list, emulator coverage, all three data-injection
+mechanisms, and the fallback behavior for every other node.
 
 ## Install and build
 
@@ -67,11 +67,11 @@ s8n run workflow.json [--input input.json] [--mocks mocks.json] [--emulate slack
   `--execution-log` is enabled. Original item counts remain in metadata.
 - `--emulate`: Enables comma-separated stateful integration families, or `all`.
   Unsupported operations still use `--mocks`. See
-  [SERVICE_EMULATION.md](SERVICE_EMULATION.md) for the operation matrix,
-  evidence contract, external-oracle strategy, and deliberate limits.
+  [the service emulation guide](docs/service-emulation.md) for the operation
+  matrix, evidence contract, external-oracle strategy, and deliberate limits.
 - `--emulator-seed`: Loads initial state for read-first emulated workflows. It
   requires `--emulate`; the seed format is documented in
-  [SERVICE_EMULATION.md](SERVICE_EMULATION.md).
+  [the service emulation guide](docs/service-emulation.md).
 
 `data.status` is one of:
 
@@ -157,7 +157,7 @@ workflow exports. It also preserves n8n node type identifiers such as
 Node support is intentionally layered rather than a yes/no claim. A node can
 have local execution semantics, opt-in stateful service emulation, injected
 output, or generic mock-only handling. Unknown executable node types are not
-rejected. See [Node support tiers](NODE_SUPPORT.md) before interpreting a
+rejected. See [Node support tiers](docs/node-support.md) before interpreting a
 successful simulation as behavioral coverage.
 
 ## Mock data
@@ -215,7 +215,11 @@ nodes, and expressions containing unsafe syntax or non-whitelisted calls before
 execution. The scenarios seed local service state and use deterministic mocks
 for remote HTTP and model responses, while service mutations are executed and
 read back through the stateful emulators. See
-[`REAL_SERVICE_SIMULATION_REPORT.md`](REAL_SERVICE_SIMULATION_REPORT.md).
+[the real-service simulation report](docs/reports/real-service-simulation.md).
+
+Retained quality evidence is organized under `docs/reports/`, including the
+[release quality report](docs/reports/quality.md) and the
+[community sample report](docs/reports/community-sample-simulation.md).
 
 Files under `fixtures/` are original test workflows. Files under `examples/`
 are original documentation examples. They contain no copied private workflow

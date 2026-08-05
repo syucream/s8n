@@ -60,7 +60,7 @@ s8n run workflow.json --emulate all --emulator-seed seed.json
 Coverage is operation-specific. Merely recognizing a service family does not
 mean every resource, operation, or API edge case is emulated. Unsupported
 operations continue to Tier 3/4 mock handling. The detailed operation and
-fidelity boundaries are in [SERVICE_EMULATION.md](SERVICE_EMULATION.md).
+fidelity boundaries are in [service-emulation.md](service-emulation.md).
 
 The Vercel Labs `emulate` package is an independent quality-gate oracle for
 selected Slack, GitHub, and Google Workspace behavior. It is not a runtime

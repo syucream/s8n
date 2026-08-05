@@ -35,9 +35,10 @@ read their safety notes in the README before changing those policies.
 
 - Keep unrelated working-tree changes out of the commit.
 - Add normal and failure-path tests for behavior changes.
-- Update `NODE_SUPPORT.md` when a node changes support tier or an emulator adds
-  an operation.
-- Update `SERVICE_EMULATION.md` when emulator fidelity or limitations change.
+- Update `docs/node-support.md` when a node changes support tier or an emulator
+  adds an operation.
+- Update `docs/service-emulation.md` when emulator fidelity or limitations
+  change.
 - Keep all repository-facing text in English.
 
 GitHub Actions runs lint, build, and test as separate required-check candidates

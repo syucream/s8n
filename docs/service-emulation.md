@@ -1,4 +1,4 @@
-# Service emulation
+# Stateful service emulation
 
 s8n provides an in-process, stateful contract emulator for the integration
 families that most often determine whether a workflow behaves correctly after

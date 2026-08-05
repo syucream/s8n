@@ -1,4 +1,4 @@
-# s8n Quality Report
+# Quality report
 
 Date: 2026-08-01
 
@@ -91,4 +91,4 @@ The exercise found and fixed concrete published-workflow gaps: legacy Set
 values, default service operations, state seeding, richer GCS/Gmail/Notion/Jira
 and GitHub semantics, Vertex language-model subnodes, Time Saved pass-through,
 and expression compatibility. The detailed outcomes and fidelity boundary are
-retained in `REAL_SERVICE_SIMULATION_REPORT.md`.
+retained in [real-service-simulation.md](real-service-simulation.md).
