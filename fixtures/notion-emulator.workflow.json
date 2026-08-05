@@ -1,0 +1,40 @@
+{
+  "name": "Notion emulator read-back",
+  "nodes": [
+    {
+      "id": "trigger",
+      "name": "Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "parameters": {}
+    },
+    {
+      "id": "create",
+      "name": "Create Page",
+      "type": "n8n-nodes-base.notion",
+      "parameters": {
+        "resource": "page",
+        "operation": "create",
+        "title": "Agent evidence",
+        "properties": { "passed": true }
+      }
+    },
+    {
+      "id": "read",
+      "name": "Read Page",
+      "type": "n8n-nodes-base.notion",
+      "parameters": {
+        "resource": "page",
+        "operation": "get",
+        "pageId": "={{$('Create Page').first().json.id}}"
+      }
+    }
+  ],
+  "connections": {
+    "Trigger": {
+      "main": [[{ "node": "Create Page", "type": "main", "index": 0 }]]
+    },
+    "Create Page": {
+      "main": [[{ "node": "Read Page", "type": "main", "index": 0 }]]
+    }
+  }
+}

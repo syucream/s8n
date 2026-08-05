@@ -19,6 +19,7 @@ import { splitOutExecutor } from "./builtin/split-out.ts";
 import { stopAndErrorExecutor } from "./builtin/stop-and-error.ts";
 import { summarizeExecutor } from "./builtin/summarize.ts";
 import { switchExecutor } from "./builtin/switch.ts";
+import { timeSavedExecutor } from "./builtin/time-saved.ts";
 import { waitExecutor } from "./builtin/wait.ts";
 import { webhookExecutor } from "./builtin/webhook.ts";
 import type { NodeExecutor } from "./types.ts";
@@ -35,6 +36,7 @@ const BUILTIN_EXECUTORS: NodeExecutor[] = [
   switchExecutor,
   mergeExecutor,
   codeExecutor,
+  timeSavedExecutor,
   noOpExecutor,
   waitExecutor,
   aggregateExecutor,

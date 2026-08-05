@@ -1,4 +1,4 @@
-# v0.2.0 Quality Report
+# s8n Quality Report
 
 Date: 2026-08-01
 
@@ -10,7 +10,7 @@ verification, and execution of a currently published community workflow.
 
 ## Verified results
 
-- `bun run check`: passed with 102 tests and 229 assertions.
+- `bun run check`: passed with 130 tests and 318 assertions.
 - `bun run build`: produced a standalone executable and `./dist/s8n --help`
   started without repository runtime files.
 - The compiled executable ran the Slack release example with `--emulate slack`.
@@ -56,3 +56,39 @@ This is a structural and deterministic simulation gate, not a claim that s8n
 faithfully reproduces remote APIs, LLM behavior, or downloaded Code-node logic.
 It replaces the downloaded-Code `quality:community` check in the current
 `bun run quality` release gate; that legacy command remains trusted-input only.
+
+## Multi-service emulator gate
+
+Date: 2026-08-03
+
+`bun run quality:services` executes stateful create-to-read workflows for GWS,
+GCP, Notion, Jira, and GitHub. It also executes an input-mapped BigQuery insert,
+SQL table read-back, and a downstream Vertex AI invocation. Every scenario
+passed with exact response versus
+read-back equality and every emitted effect was verified. The negative path
+rejected a missing Notion resource instead of fabricating data. A mutation
+check flipped one evidence record to `verified: false` and proved the verifier
+rejects it.
+
+The gate also started the Vercel Labs GitHub and Google emulators and performed
+real local HTTP create/read cycles for a GitHub issue and a Gmail message. Both
+oracle parity checks passed. The in-process s8n implementation remains the
+standalone runtime path; the broader server emulator is an independent quality
+oracle for services it supports.
+
+## Real public multi-service workflows
+
+Date: 2026-08-03
+
+`bun run quality:real-services` fetched five reviewed, hash-pinned official n8n
+templates and executed their original graphs with seeded state and deterministic
+remote responses. All five workflows succeeded and all 21 assertions passed.
+The coverage includes BigQuery, Notion, GitHub, Gmail, Cloud Storage, Jira, and
+Vertex AI. Every emulated service mutation was read back before being marked
+verified.
+
+The exercise found and fixed concrete published-workflow gaps: legacy Set
+values, default service operations, state seeding, richer GCS/Gmail/Notion/Jira
+and GitHub semantics, Vertex language-model subnodes, Time Saved pass-through,
+and expression compatibility. The detailed outcomes and fidelity boundary are
+retained in `REAL_SERVICE_SIMULATION_REPORT.md`.

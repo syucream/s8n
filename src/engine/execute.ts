@@ -243,8 +243,23 @@ export async function runWorkflow(
     hasExplicitInput: options.hasExplicitInput,
     workflowStaticData: new Map(),
     integrationRunner: options.integrationRunner,
+    integrationSubnodes: new Map(),
     integrationEffects: [],
   };
+  for (const [sourceName, connectionTypes] of Object.entries(
+    workflow.connections,
+  )) {
+    const sourceNode = nodesByName.get(sourceName);
+    if (!sourceNode) continue;
+    for (const slot of connectionTypes.ai_languageModel ?? []) {
+      for (const destination of slot) {
+        const connected =
+          runtime.integrationSubnodes?.get(destination.node) ?? [];
+        connected.push(sourceNode);
+        runtime.integrationSubnodes?.set(destination.node, connected);
+      }
+    }
+  }
 
   const executed = new Set<string>();
 

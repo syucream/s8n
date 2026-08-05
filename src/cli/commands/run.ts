@@ -3,6 +3,11 @@ import { runWorkflow } from "../../engine/execute.ts";
 import { toN8nExecutionLog } from "../../format/n8n-execution.ts";
 import { printEnvelope } from "../../format/output.ts";
 import { EmulatorIntegrationRunner } from "../../integrations/emulator.ts";
+import {
+  EMULATED_SERVICES,
+  type EmulatedService,
+  type EmulatorSeed,
+} from "../../integrations/types.ts";
 import { createMockLookup, emptyMockLookup } from "../../mock/provider.ts";
 import { createDefaultRegistry } from "../../nodes/registry.ts";
 import type { Item } from "../../schema/item.ts";
@@ -16,6 +21,7 @@ interface RunOpts {
   now?: string;
   startNode?: string;
   emulate?: string;
+  emulatorSeed?: string;
   executionLog?: boolean;
   truncateData?: string;
 }
@@ -44,7 +50,11 @@ export function registerRunCommand(program: Command): void {
     )
     .option(
       "--emulate <services>",
-      'Run supported integrations against stateful local emulators (currently "slack")',
+      `Run integrations against stateful local emulators (${EMULATED_SERVICES.join(", ")}, or all)`,
+    )
+    .option(
+      "--emulator-seed <file>",
+      "JSON file containing initial state as { stores: { storeName: [entities] } }",
     )
     .option(
       "--execution-log",
@@ -134,18 +144,53 @@ export function registerRunCommand(program: Command): void {
 
       let integrationRunner: EmulatorIntegrationRunner | undefined;
       try {
+        let emulatorSeed: EmulatorSeed | undefined;
+        if (opts.emulatorSeed) {
+          const rawSeed = await loadJsonFile(opts.emulatorSeed);
+          if (
+            rawSeed === null ||
+            typeof rawSeed !== "object" ||
+            Array.isArray(rawSeed) ||
+            !("stores" in rawSeed) ||
+            rawSeed.stores === null ||
+            typeof rawSeed.stores !== "object" ||
+            Array.isArray(rawSeed.stores)
+          ) {
+            throw new Error(
+              "--emulator-seed JSON must be { stores: { storeName: [entities] } }",
+            );
+          }
+          for (const [storeName, entities] of Object.entries(rawSeed.stores)) {
+            if (!Array.isArray(entities))
+              throw new Error(
+                `--emulator-seed store "${storeName}" must be an array`,
+              );
+          }
+          emulatorSeed = rawSeed as EmulatorSeed;
+        }
         if (opts.emulate) {
           const services = opts.emulate
             .split(",")
             .map((service) => service.trim())
             .filter(Boolean);
-          const unsupported = services.filter((service) => service !== "slack");
+          const expanded = services.includes("all")
+            ? [...EMULATED_SERVICES]
+            : services;
+          const unsupported = expanded.filter(
+            (service) =>
+              !EMULATED_SERVICES.includes(service as EmulatedService),
+          );
           if (unsupported.length > 0 || services.length === 0) {
             throw new Error(
-              `Unsupported --emulate service(s): ${unsupported.join(", ") || opts.emulate}. Supported services: slack`,
+              `Unsupported --emulate service(s): ${unsupported.join(", ") || opts.emulate}. Supported services: ${EMULATED_SERVICES.join(", ")}, all`,
             );
           }
-          integrationRunner = await EmulatorIntegrationRunner.create();
+          integrationRunner = await EmulatorIntegrationRunner.create(
+            expanded as EmulatedService[],
+            emulatorSeed,
+          );
+        } else if (emulatorSeed) {
+          throw new Error("--emulator-seed requires --emulate");
         }
 
         const result = await runWorkflow(loaded.workflow, {

@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { EmulatorIntegrationRunner } from "../integrations/emulator.ts";
 import type { IntegrationRunner } from "../integrations/types.ts";
 import { createMockLookup, emptyMockLookup } from "../mock/provider.ts";
 import { createDefaultRegistry } from "../nodes/registry.ts";
@@ -119,6 +120,87 @@ describe("runWorkflow", () => {
       name: "Alice",
       greeting: "Hi Alice",
     });
+  });
+
+  test("Set supports the legacy typed values shape in published workflows", async () => {
+    const workflow = wf({
+      name: "legacy-set",
+      nodes: [
+        {
+          id: "1",
+          name: "Trigger",
+          type: "n8n-nodes-base.manualTrigger",
+          parameters: {},
+        },
+        {
+          id: "2",
+          name: "Set",
+          type: "n8n-nodes-base.set",
+          parameters: {
+            keepOnlySet: true,
+            values: {
+              string: [{ name: "name", value: "={{$json.name}}" }],
+              number: [{ name: "latitude", value: "={{$json.latitude}}" }],
+            },
+          },
+        },
+      ],
+      connections: {
+        Trigger: { main: [[{ node: "Set", type: "main", index: 0 }]] },
+      },
+    });
+
+    const result = await runWorkflow(workflow, {
+      initialInput: toItems([
+        { name: "iss", latitude: 35.6812, ignored: true },
+      ]),
+      hasExplicitInput: true,
+      mocks: emptyMockLookup,
+      registry,
+    });
+
+    expect(result.nodeOutputs.Set?.[0]?.json).toEqual({
+      name: "iss",
+      latitude: 35.6812,
+    });
+  });
+
+  test("Time Saved records no external I/O and preserves main items", async () => {
+    const workflow = wf({
+      name: "time-saved",
+      nodes: [
+        {
+          id: "1",
+          name: "Trigger",
+          type: "n8n-nodes-base.manualTrigger",
+          parameters: {},
+        },
+        {
+          id: "2",
+          name: "Time Saved",
+          type: "n8n-nodes-base.timeSaved",
+          parameters: { mode: "perItem", minutesSaved: 0.5 },
+        },
+      ],
+      connections: {
+        Trigger: {
+          main: [[{ node: "Time Saved", type: "main", index: 0 }]],
+        },
+      },
+    });
+
+    const result = await runWorkflow(workflow, {
+      initialInput: toItems([{ id: "mail-1" }]),
+      hasExplicitInput: true,
+      mocks: emptyMockLookup,
+      registry,
+    });
+
+    expect(result.status).toBe("success");
+    expect(result.nodeOutputs["Time Saved"]?.[0]?.json).toEqual({
+      id: "mail-1",
+    });
+    expect(result.effects).toEqual([]);
   });
 
   test("Set evaluates includeOtherFields as a per-item expression, not just a literal boolean", async () => {
@@ -1422,6 +1504,60 @@ describe("runWorkflow", () => {
     expect(result.effects[0]?.request).toMatchObject({
       channel: "release-alerts",
       text: "Release v0.2.0",
+    });
+  });
+
+  test("a Vertex AI language-model subnode drives its connected chain", async () => {
+    const workflow = wf({
+      name: "Published-style Vertex chain",
+      nodes: [
+        {
+          name: "Trigger",
+          type: "n8n-nodes-base.manualTrigger",
+          parameters: {},
+        },
+        {
+          name: "Summarize",
+          type: "@n8n/n8n-nodes-langchain.chainLlm",
+          parameters: {
+            text: "=Summarize {{$json.subject}}",
+            promptType: "define",
+          },
+        },
+        {
+          name: "Google Vertex Chat Model",
+          type: "@n8n/n8n-nodes-langchain.lmChatGoogleVertex",
+          parameters: { projectId: { value: "local-project" } },
+        },
+      ],
+      connections: {
+        Trigger: {
+          main: [[{ node: "Summarize", type: "main", index: 0 }]],
+        },
+        "Google Vertex Chat Model": {
+          ai_languageModel: [
+            [{ node: "Summarize", type: "ai_languageModel", index: 0 }],
+          ],
+        },
+      },
+    });
+    const integrationRunner = await EmulatorIntegrationRunner.create(["gcp"]);
+    const result = await runWorkflow(workflow, {
+      initialInput: toItems([{ subject: "release evidence" }]),
+      hasExplicitInput: true,
+      mocks: emptyMockLookup,
+      registry,
+      integrationRunner,
+    });
+    expect(result.status).toBe("success");
+    expect(result.nodeOutputs.Summarize?.[0]?.json).toMatchObject({
+      prompt: "Summarize release evidence",
+      finishReason: "STOP",
+    });
+    expect(result.effects[0]).toMatchObject({
+      nodeName: "Google Vertex Chat Model",
+      operation: "vertex.models.generateContent",
+      verified: true,
     });
   });
 

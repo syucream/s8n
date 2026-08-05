@@ -41,7 +41,20 @@ function runJs(expr: string, scope: ExpressionScope): unknown {
   const argNames = Object.keys(scope);
   const argValues = Object.values(scope);
   try {
-    const fn = new Function(...argNames, `"use strict"; return (${expr});`);
+    // n8n adds helpers to primitive values. Keep the common JSON helper local
+    // to expression evaluation instead of mutating global prototypes.
+    const compatibleExpr = expr
+      .trim()
+      .replace(/;$/, "")
+      .replace(
+        /((?:\$json|\$node(?:\[[^\]]+\])?)(?:\??\.[A-Za-z_$][\w$]*|\[[^\]]+\])+?)\.parseJson\(\)/g,
+        "JSON.parse($1)",
+      )
+      .replace(/(\$now|\$today)\.format\(/g, "$1.toFormat(");
+    const fn = new Function(
+      ...argNames,
+      `"use strict"; return (${compatibleExpr});`,
+    );
     return fn(...argValues);
   } catch (cause) {
     throw new ExpressionError(expr, cause);

@@ -54,12 +54,30 @@ describe("evaluateExpressionString", () => {
     ).toThrow();
   });
 
+  test("supports n8n's parseJson string helper used by published workflows", () => {
+    const scope = scopeFor({
+      result: { message: '{"title":"Fix checkout"}' },
+    });
+    expect(
+      evaluateExpressionString(
+        "={{ $json.result.message.parseJson().title }}",
+        scope,
+      ),
+    ).toBe("Fix checkout");
+  });
+
   test("$now is a Luxon DateTime supporting real n8n date arithmetic", () => {
     const result = evaluateExpressionString(
       "={{$now.minus({days: 7}).toFormat('yyyy-MM-dd')}}",
       scopeFor({}),
     );
     expect(result).toBe("2025-12-25");
+  });
+
+  test("supports n8n's DateTime format alias used by published workflows", () => {
+    expect(
+      evaluateExpressionString("={{$now.format('yyyyMMdd')}}", scopeFor({})),
+    ).toBe("20260101");
   });
 
   test("$today is start-of-day and DateTimes interpolate as ISO text, not JSON", () => {

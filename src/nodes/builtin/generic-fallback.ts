@@ -82,12 +82,52 @@ export async function executeGenericFallback(
         const emulated = await runtime.integrationRunner.execute(
           node,
           resolvedParams as Record<string, unknown>,
+          item,
         );
         if (emulated) {
           runtime.integrationEffects.push(emulated.effect);
           outputItems.push(...normalizeMockToItems(emulated.output, i));
           continue;
         }
+
+        let handledBySubnode = false;
+        for (const subnode of runtime.integrationSubnodes?.get(node.name) ??
+          []) {
+          const subnodeParameters = resolveParameterValue(
+            subnode.parameters,
+            scope,
+          ) as Record<string, unknown>;
+          const parent = resolvedParams as Record<string, unknown>;
+          const prompt =
+            parent.text ??
+            parent.prompt ??
+            item.json.chatInput ??
+            item.json.text ??
+            item.json.message;
+          const simulatedResponse =
+            lookupItemMock(runtime.mocks, node.name, loopIterationIndex ?? i) ??
+            lookupItemMock(
+              runtime.mocks,
+              subnode.name,
+              loopIterationIndex ?? i,
+            );
+          const subnodeResult = await runtime.integrationRunner.execute(
+            subnode,
+            {
+              ...subnodeParameters,
+              ...(prompt === undefined ? {} : { prompt }),
+              ...(simulatedResponse === undefined ? {} : { simulatedResponse }),
+            },
+            item,
+          );
+          if (subnodeResult) {
+            runtime.integrationEffects.push(subnodeResult.effect);
+            outputItems.push(...normalizeMockToItems(subnodeResult.output, i));
+            handledBySubnode = true;
+            break;
+          }
+        }
+        if (handledBySubnode) continue;
       } catch (cause) {
         return {
           status: "error",

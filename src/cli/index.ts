@@ -12,7 +12,7 @@ program
   .description(
     "Simulate n8n workflows locally with mocked I/O and optional stateful emulators. Designed for use by AI agents.",
   )
-  .version("0.3.0");
+  .version("0.4.0");
 
 registerRunCommand(program);
 registerValidateCommand(program);

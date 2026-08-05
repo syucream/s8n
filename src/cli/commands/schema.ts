@@ -1,5 +1,6 @@
 import type { Command } from "commander";
 import { printEnvelope } from "../../format/output.ts";
+import { EMULATED_SERVICES } from "../../integrations/types.ts";
 import {
   allNodeTypeMockHints,
   findNodeTypeMockHint,
@@ -19,17 +20,10 @@ export function registerSchemaCommand(program: Command): void {
           command: "schema",
           data: {
             executedNodeTypes: NODE_TYPE_DOCS,
-            statefullyEmulatedNodeTypes: [
-              {
-                type: "n8n-nodes-base.slack",
-                enableWith: "run --emulate slack",
-                operations: [
-                  "message/post",
-                  "message/update",
-                  "user/lookupByEmail",
-                ],
-              },
-            ],
+            statefulEmulators: EMULATED_SERVICES.map((service) => ({
+              service,
+              enableWith: `run --emulate ${service}`,
+            })),
             mockedNodeTypesWithTailoredHints: allNodeTypeMockHints(),
           },
         });

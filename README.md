@@ -5,10 +5,10 @@ server and never performs real external I/O.
 
 - External integrations use agent-supplied mocks by default. Supported
   integrations can instead use opt-in, stateful in-memory emulation.
-- `--emulate slack` creates channels, posts and updates messages, preserves
-  threads, and looks up users inside the same s8n process. It reads state back
-  before reporting a side effect as verified; no Slack account, token, local
-  server, extra process, or network request is used.
+- `--emulate all` enables stateful local Slack, GWS, GCP, Notion, Jira, and
+  GitHub contracts. Mutations are read back before a side effect is reported as
+  verified; no account, credential, local server, extra process, or network
+  request is used.
 - The CLI contains no AI features. It is designed for an external AI agent to
   run a workflow, inspect missing mock requests, generate synthetic data, and
   rerun the workflow.
@@ -41,7 +41,7 @@ by parsing that envelope.
 Simulate a workflow:
 
 ```bash
-s8n run workflow.json [--input input.json] [--mocks mocks.json] [--emulate slack] [--now 2026-01-01T00:00:00Z] [--start-node "Node Name"] [--execution-log] [--truncate-data 10]
+s8n run workflow.json [--input input.json] [--mocks mocks.json] [--emulate slack,gws,gcp,notion,jira,github|all] [--emulator-seed seed.json] [--now 2026-01-01T00:00:00Z] [--start-node "Node Name"] [--execution-log] [--truncate-data 10]
 ```
 
 - `--input`: Initial items passed to the trigger node. Accepts one JSON object
@@ -57,9 +57,13 @@ s8n run workflow.json [--input input.json] [--mocks mocks.json] [--emulate slack
   timing, and status.
 - `--truncate-data`: Limits the retained items in each node output when
   `--execution-log` is enabled. Original item counts remain in metadata.
-- `--emulate slack`: Uses the stateful, single-process Slack emulator for
-  supported Slack operations. Unsupported Slack operations and every other
-  integration still use `--mocks`.
+- `--emulate`: Enables comma-separated stateful integration families, or `all`.
+  Unsupported operations still use `--mocks`. See
+  [SERVICE_EMULATION.md](SERVICE_EMULATION.md) for the operation matrix,
+  evidence contract, external-oracle strategy, and deliberate limits.
+- `--emulator-seed`: Loads initial state for read-first emulated workflows. It
+  requires `--emulate`; the seed format is documented in
+  [SERVICE_EMULATION.md](SERVICE_EMULATION.md).
 
 `data.status` is one of:
 
@@ -129,10 +133,9 @@ workflow exports. It also preserves n8n node type identifiers such as
   Aggregate, Limit, Sort, Split Out, Loop Over Items, Date & Time, Remove
   Duplicates, Summarize, Stop and Error, and Respond to Webhook.
 - HTTP Request returns mock responses and performs no network communication.
-- Every unmodeled node type, including integration nodes such as Slack, Gmail,
-  Notion, BigQuery, and LangChain nodes, falls back to external-I/O mocking
-  instead of failing. Slack's supported operations may opt into stateful
-  emulation through `--emulate slack` without changing default behavior.
+- Every unmodeled node type falls back to external-I/O mocking instead of
+  failing. Supported service operations may opt into stateful emulation without
+  changing the default behavior.
 - Expressions support `$json`, `$input`, `$('NodeName')`, `$now`, `$today`,
   modern `$node`, legacy `$node["Node Name"].json`, `$workflow`, and
   `$itemIndex`. `$now` and `$today` are Luxon `DateTime` objects, so methods
@@ -162,6 +165,8 @@ bun run typecheck      # tsc --noEmit
 bun run test           # bun test
 bun run build          # compile dist/s8n
 bun run quality:emulator # message, thread, user, and Vercel Labs oracle checks
+bun run quality:services # GWS/GCP/Notion/Jira/GitHub state and oracle checks
+bun run quality:real-services # five reviewed public multi-service workflows
 bun run quality:community # trusted-only legacy two-template execution check
 bun run quality:corpus    # safely simulate a fixed corpus of 100 public templates
 bun run quality        # complete release gate, including standalone build
@@ -180,6 +185,14 @@ the fetched definitions have been reviewed and trusted.
 templates and reports builtin versus mocked node visits. Because downloaded
 workflow JavaScript is untrusted, the corpus gate neutralizes expressions and
 mocks Code nodes instead of evaluating remote code in the local process.
+
+`quality:real-services` fetches five reviewed official n8n templates whose
+SHA-256 hashes are pinned in the gate. It rejects changed definitions, Code
+nodes, and expressions containing unsafe syntax or non-whitelisted calls before
+execution. The scenarios seed local service state and use deterministic mocks
+for remote HTTP and model responses, while service mutations are executed and
+read back through the stateful emulators. See
+[`REAL_SERVICE_SIMULATION_REPORT.md`](REAL_SERVICE_SIMULATION_REPORT.md).
 
 Files under `fixtures/` are original test workflows. Files under `examples/`
 are original documentation examples. They contain no copied private workflow

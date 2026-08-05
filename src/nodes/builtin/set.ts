@@ -50,6 +50,22 @@ function extractAssignments(
       .map((a) => ({ name: String(a.name ?? ""), value: a.value }))
       .filter((a) => a.name.length > 0);
   }
+  // Set v1 shape used by older published n8n workflows:
+  // parameters.values.{string,number,boolean}[] = [{ name, value }].
+  const legacy = resolvedParams.values;
+  if (legacy !== null && typeof legacy === "object" && !Array.isArray(legacy)) {
+    return Object.values(legacy as Record<string, unknown>)
+      .flatMap((entries) => (Array.isArray(entries) ? entries : []))
+      .filter(
+        (entry): entry is Record<string, unknown> =>
+          entry !== null && typeof entry === "object",
+      )
+      .map((entry) => ({
+        name: String(entry.name ?? ""),
+        value: entry.value,
+      }))
+      .filter((entry) => entry.name.length > 0);
+  }
   return [];
 }
 
@@ -73,7 +89,9 @@ export const setExecutor: NodeExecutor = {
           node.parameters,
           scope,
         ) as Record<string, unknown>;
-        const keepOnlySet = resolvedParams.includeOtherFields !== true;
+        const keepOnlySet =
+          resolvedParams.keepOnlySet === true ||
+          resolvedParams.includeOtherFields !== true;
         const baseJson = keepOnlySet ? {} : { ...item.json };
 
         if (resolvedParams.mode === "raw") {

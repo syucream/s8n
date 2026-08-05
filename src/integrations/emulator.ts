@@ -1,5 +1,12 @@
+import type { Item } from "../schema/item.ts";
 import type { WorkflowNode } from "../schema/workflow.ts";
-import type { EmulatedIntegrationResult, IntegrationRunner } from "./types.ts";
+import { ServiceEmulators } from "./service-emulators.ts";
+import type {
+  EmulatedIntegrationResult,
+  EmulatedService,
+  EmulatorSeed,
+  IntegrationRunner,
+} from "./types.ts";
 
 interface SlackChannel {
   id: string;
@@ -49,6 +56,7 @@ function firstCollectionValue(value: unknown, key: string): unknown {
  * verified.
  */
 export class EmulatorIntegrationRunner implements IntegrationRunner {
+  private readonly serviceEmulators: ServiceEmulators;
   private readonly channels: SlackChannel[] = [
     { id: "C000000001", name: "general" },
     { id: "C000000002", name: "random" },
@@ -69,8 +77,18 @@ export class EmulatorIntegrationRunner implements IntegrationRunner {
   private sequence = 0;
   private readonly epochSeconds = Math.floor(Date.now() / 1000);
 
-  static async create(): Promise<EmulatorIntegrationRunner> {
-    return new EmulatorIntegrationRunner();
+  private constructor(
+    private readonly enabled: ReadonlySet<EmulatedService> = new Set(["slack"]),
+    seed?: EmulatorSeed,
+  ) {
+    this.serviceEmulators = new ServiceEmulators(seed);
+  }
+
+  static async create(
+    services: Iterable<EmulatedService> = ["slack"],
+    seed?: EmulatorSeed,
+  ): Promise<EmulatorIntegrationRunner> {
+    return new EmulatorIntegrationRunner(new Set(services), seed);
   }
 
   private nextId(prefix: string, count: number): string {
@@ -222,8 +240,17 @@ export class EmulatorIntegrationRunner implements IntegrationRunner {
   async execute(
     node: WorkflowNode,
     parameters: Record<string, unknown>,
+    inputItem?: Item,
   ): Promise<EmulatedIntegrationResult | undefined> {
-    if (node.type !== "n8n-nodes-base.slack") return undefined;
+    if (node.type !== "n8n-nodes-base.slack") {
+      return this.serviceEmulators.execute(
+        node,
+        parameters,
+        this.enabled,
+        inputItem,
+      );
+    }
+    if (!this.enabled.has("slack")) return undefined;
 
     const resource = String(parameters.resource ?? "message");
     const legacyPost =

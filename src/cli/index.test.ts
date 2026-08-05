@@ -109,4 +109,39 @@ describe("s8n CLI", () => {
     expect(parsed.data.requiresMock).toBe(true);
     expect(parsed.data.tailoredMockExample).toBeDefined();
   });
+
+  test("run --emulate all persists and reads back a Notion page", async () => {
+    const { stdout, exitCode } = await runCli([
+      "run",
+      path.join(FIXTURES_DIR, "notion-emulator.workflow.json"),
+      "--emulate",
+      "all",
+    ]);
+    expect(exitCode).toBe(0);
+    const parsed = JSON.parse(stdout);
+    expect(parsed.data.status).toBe("success");
+    expect(parsed.data.effects).toHaveLength(2);
+    expect(
+      parsed.data.effects.every(
+        (effect: { verified: boolean }) => effect.verified,
+      ),
+    ).toBe(true);
+    expect(parsed.data.nodeOutputs["Read Page"][0].json).toMatchObject({
+      title: "Agent evidence",
+      properties: { passed: true },
+    });
+  });
+
+  test("run rejects unknown emulator names with the supported service list", async () => {
+    const { stdout, exitCode } = await runCli([
+      "run",
+      path.join(FIXTURES_DIR, "basic.workflow.json"),
+      "--emulate",
+      "unknown",
+    ]);
+    expect(exitCode).toBe(1);
+    expect(JSON.parse(stdout).error).toContain(
+      "Supported services: slack, gws, gcp, notion, jira, github, all",
+    );
+  });
 });
