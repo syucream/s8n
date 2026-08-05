@@ -1,0 +1,98 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    name: Validate release
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.4
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Verify tag matches package version
+        run: test "v$(bun -e 'console.log(require("./package.json").version)')" = "$GITHUB_REF_NAME"
+      - name: Run release quality gate
+        run: bun run quality
+
+  binaries:
+    name: Build ${{ matrix.asset }}
+    needs: validate
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: bun-linux-x64
+            asset: s8n-linux-x64
+            smoke: true
+          - target: bun-linux-x64-baseline
+            asset: s8n-linux-x64-baseline
+            smoke: false
+          - target: bun-linux-arm64
+            asset: s8n-linux-arm64
+            smoke: false
+          - target: bun-darwin-x64
+            asset: s8n-darwin-x64
+            smoke: false
+          - target: bun-darwin-arm64
+            asset: s8n-darwin-arm64
+            smoke: false
+          - target: bun-windows-x64
+            asset: s8n-windows-x64.exe
+            smoke: false
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.3.4
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+      - name: Build standalone executable
+        run: bun build --compile --minify --target=${{ matrix.target }} --outfile=dist/${{ matrix.asset }} src/cli/index.ts
+      - name: Smoke-test native executable
+        if: matrix.smoke
+        run: ./dist/${{ matrix.asset }} --version | grep -Fx "$(bun -e 'console.log(require("./package.json").version)')"
+      - name: Upload standalone executable
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    name: Publish GitHub Release
+    needs: binaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Download standalone executables
+        uses: actions/download-artifact@v4
+        with:
+          path: release
+          merge-multiple: true
+      - name: Generate checksums
+        working-directory: release
+        run: sha256sum s8n-* > SHA256SUMS
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" release/* --verify-tag --generate-notes --title "$GITHUB_REF_NAME"

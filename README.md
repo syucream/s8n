@@ -1,5 +1,9 @@
 # s8n
 
+[![Lint](https://github.com/syucream/s8n/actions/workflows/lint.yml/badge.svg)](https://github.com/syucream/s8n/actions/workflows/lint.yml)
+[![Build](https://github.com/syucream/s8n/actions/workflows/build.yml/badge.svg)](https://github.com/syucream/s8n/actions/workflows/build.yml)
+[![Test](https://github.com/syucream/s8n/actions/workflows/test.yml/badge.svg)](https://github.com/syucream/s8n/actions/workflows/test.yml)
+
 s8n is a local CLI simulator for n8n workflow JSON. It runs without an n8n
 server and never performs real external I/O.
 
@@ -15,6 +19,10 @@ server and never performs real external I/O.
 - Bun can compile it into a single executable with `bun build --compile`.
 - Supported node fields, defaults, and branch behavior are implemented against
   upstream n8n source rather than inferred parameter shapes.
+
+See [NODE_SUPPORT.md](NODE_SUPPORT.md) for the exact support tiers, the current
+built-in node list, emulator coverage, all three data-injection mechanisms, and
+the fallback behavior for every other node.
 
 ## Install and build
 
@@ -146,6 +154,12 @@ workflow exports. It also preserves n8n node type identifiers such as
 - Code nodes support `$getWorkflowStaticData(type)` within one execution. State
   is not persisted across executions.
 
+Node support is intentionally layered rather than a yes/no claim. A node can
+have local execution semantics, opt-in stateful service emulation, injected
+output, or generic mock-only handling. Unknown executable node types are not
+rejected. See [Node support tiers](NODE_SUPPORT.md) before interpreting a
+successful simulation as behavioral coverage.
+
 ## Mock data
 
 - A `mockKey` is normally the node name. I/O nodes processing multiple items
@@ -153,6 +167,9 @@ workflow exports. It also preserves n8n node type identifiers such as
   the plain node name.
 - Webhooks and unmodeled triggers used as start nodes prefer `--input` and do
   not request a mock when input is provided.
+- Existing n8n `pinData` in the workflow export overrides execution for the
+  named node. This is the broadest injection mechanism and works for built-in,
+  emulated, and otherwise unmodeled node types.
 
 ## Development
 
@@ -171,6 +188,12 @@ bun run quality:community # trusted-only legacy two-template execution check
 bun run quality:corpus    # safely simulate a fixed corpus of 100 public templates
 bun run quality        # complete release gate, including standalone build
 ```
+
+Pull requests run separate lint, build, and test workflows. Version tags of
+the form `vX.Y.Z` run the release workflow, which re-runs the local checks and
+publishes standalone Linux, macOS, and Windows executables plus SHA-256
+checksums. See [CONTRIBUTING.md](CONTRIBUTING.md) for the contributor and
+release checklist.
 
 `quality:community` fetches currently published workflows from the official n8n
 template API at test time and never vendors third-party workflow data. It
