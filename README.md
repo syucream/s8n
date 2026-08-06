@@ -3,106 +3,60 @@
 [![Lint](https://github.com/syucream/s8n/actions/workflows/lint.yml/badge.svg)](https://github.com/syucream/s8n/actions/workflows/lint.yml)
 [![Build](https://github.com/syucream/s8n/actions/workflows/build.yml/badge.svg)](https://github.com/syucream/s8n/actions/workflows/build.yml)
 [![Test](https://github.com/syucream/s8n/actions/workflows/test.yml/badge.svg)](https://github.com/syucream/s8n/actions/workflows/test.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-s8n is a local CLI simulator for n8n workflow JSON. It runs without an n8n
-server and never performs real external I/O.
+Run and inspect n8n workflow JSON locally, without starting n8n or contacting
+external services.
 
-- External integrations use agent-supplied mocks by default. Supported
-  integrations can instead use opt-in, stateful in-memory emulation.
-- `--emulate all` enables local AI, Slack, GWS, GCP, Notion, Jira, and GitHub
-  contracts. Mutations are read back before a side effect is reported as
-  verified; no account, credential, local server, extra process, or network
-  request is used.
-- The CLI contains no language model. It is designed for an external AI agent
-  to provide model fixtures, inspect missing mock requests, generate synthetic
-  data, and rerun the workflow.
-- Bun can compile it into a single executable with `bun build --compile`.
-- Supported node fields, defaults, and branch behavior are implemented against
-  upstream n8n source rather than inferred parameter shapes.
+s8n is useful when you want to understand a workflow, test its branching and
+data transformations, or give an AI coding agent a safe execution loop. It
+implements common compute and control-flow nodes locally. External nodes pause
+for synthetic responses by default, while selected services can use opt-in,
+stateful in-memory emulators.
 
-See [the node support guide](docs/node-support.md) for the exact support tiers,
-the current built-in node list, emulator coverage, all three data-injection
-mechanisms, and the fallback behavior for every other node.
+> [!IMPORTANT]
+> s8n is a simulator, not n8n. It never uses workflow credentials or performs
+> real external I/O. A successful simulation does not prove authentication,
+> permissions, rate limits, webhooks, or production behavior.
 
-## Install and build
+## Quick start
+
+You need [Bun 1.3.4](https://bun.sh/) and Git.
 
 ```bash
-bun install
+git clone https://github.com/syucream/s8n.git
+cd s8n
+bun install --frozen-lockfile
 bun run build
-./dist/s8n --help
+./dist/s8n run examples/hello-world.workflow.json
 ```
 
-During development, run the TypeScript entry point directly:
+The command prints one JSON object. Look for `data.status` and the output of
+each node under `data.nodeOutputs`:
+
+```json
+{
+  "ok": true,
+  "command": "run",
+  "data": {
+    "status": "success",
+    "nodeOutputs": {
+      "Set": [{ "json": { "message": "Hello, world!" } }]
+    }
+  }
+}
+```
+
+During development, you can skip the build and run the TypeScript entry point:
 
 ```bash
-bun run src/cli/index.ts --help
+bun run src/cli/index.ts run examples/hello-world.workflow.json
 ```
 
-## Commands
+## Try a stateful integration
 
-Every command writes exactly one JSON object to stdout:
-`{ ok, command, data?, issues?, error? }`. An AI agent can determine the result
-by parsing that envelope.
-
-### `s8n run <workflowFile>`
-
-Simulate a workflow:
-
-```bash
-s8n run workflow.json [--input input.json] [--mocks mocks.json] [--emulate ai,slack,gws,gcp,notion,jira,github|all] [--emulator-seed seed.json] [--now 2026-01-01T00:00:00Z] [--start-node "Node Name"] [--execution-log] [--truncate-data 10]
-```
-
-- `--input`: Initial items passed to the trigger node. Accepts one JSON object
-  or an array of objects. Defaults to one empty item.
-- `--mocks`: External I/O mock data as a flat
-  `{ "<mockKey>": <value> }` JSON object.
-- `--now`: Fixes the Luxon `$now` and `$today` values for reproducible
-  expression evaluation.
-- `--start-node`: Selects the entry point when multiple nodes have no incoming
-  connections. Like n8n, s8n activates only one trigger per execution.
-- `--execution-log`: Returns an n8n-like `data.resultData.runData` object with
-  each node run's actual `data.main` output, input source, execution order,
-  timing, and status.
-- `--truncate-data`: Limits the retained items in each node output when
-  `--execution-log` is enabled. Original item counts remain in metadata.
-- `--emulate`: Enables comma-separated stateful integration families, or `all`.
-  Unsupported operations still use `--mocks`. See
-  [the service emulation guide](docs/service-emulation.md) for the operation
-  matrix, evidence contract, external-oracle strategy, and deliberate limits.
-- `--emulator-seed`: Loads initial state for read-first emulated workflows. It
-  requires `--emulate`; the seed format is documented in
-  [the service emulation guide](docs/service-emulation.md).
-
-`data.status` is one of:
-
-| Status | Meaning |
-| --- | --- |
-| `success` | The workflow completed. |
-| `needs_mock` | Execution paused at an I/O node without mock data. `data.pendingMocks` contains `mockKey`, `reason`, and `expectedShape`. |
-| `needs_start_node` | Multiple start nodes exist and `--start-node` is required. Candidates are in `data.startNodeCandidates`. |
-| `error` | A node without a continuing error mode failed. |
-
-A typical agent loop is:
-
-1. Run `s8n run workflow.json`.
-2. If the status is `needs_start_node`, choose a candidate and rerun with
-   `--start-node`.
-3. If the status is `needs_mock`, use `expectedShape` to generate synthetic
-   data and save it under the requested key in `mocks.json`.
-4. Rerun with `--mocks mocks.json`, repeating when more mocks are requested.
-5. On `success`, inspect each node's final output in `data.nodeOutputs` and
-   any verified integration side effects in `data.effects`.
-
-To inspect the run in the same node-indexed shape as an n8n execution result:
-
-```bash
-s8n run workflow.json --mocks mocks.json --execution-log --truncate-data 10
-```
-
-The execution is available at `data.data.resultData.runData` in the standard
-s8n command envelope.
-
-### Stateful Slack example
+This example posts a release notification into an in-memory Slack workspace,
+then reads the message back to verify the simulated side effect:
 
 ```bash
 ./dist/s8n run examples/slack-release-notification.workflow.json \
@@ -110,139 +64,117 @@ s8n command envelope.
   --emulate slack
 ```
 
-The result includes a `data.effects[]` record with the resolved request,
-emulator response, state read-back under `observation`, and `verified: true`.
-Supported major operations are message post (including rich fields and thread
-replies), message update, and user lookup by email. Channel names not already
-present in the local workspace are created automatically.
+No Slack account, token, network request, or local server is involved. The
+result includes the resolved request, emulator response, independent
+`observation`, and `verified: true` under `data.effects`.
 
-### `s8n validate <workflowFile>`
+## Run your own workflow
 
-Validate workflow schema and connection integrity without executing it.
-
-### `s8n schema [nodeType]`
-
-Describe a node type's expected `parameters` shape and mock requirements. With
-no argument, list every built-in type. Agents should consult this command
-before creating or repairing workflow JSON.
-
-### `s8n init [--out file]`
-
-Write a minimal sample workflow JSON.
-
-## Workflow JSON support
-
-s8n accepts the `nodes`, `connections`, and `parameters` structure used by n8n
-workflow exports. It also preserves n8n node type identifiers such as
-`n8n-nodes-base.httpRequest`, but it is not a complete n8n implementation.
-
-- Locally modeled nodes include Manual Trigger, Schedule Trigger, Execute
-  Workflow Trigger, Webhook, Set, If, Filter, Switch, Merge, Code, NoOp, Wait,
-  Aggregate, Limit, Sort, Split Out, Loop Over Items, Date & Time, Remove
-  Duplicates, Summarize, Stop and Error, and Respond to Webhook.
-- HTTP Request returns mock responses and performs no network communication.
-- Every unmodeled node type falls back to external-I/O mocking instead of
-  failing. Supported service operations may opt into stateful emulation without
-  changing the default behavior.
-- Expressions support `$json`, `$input`, `$('NodeName')`, `$now`, `$today`,
-  modern `$node`, legacy `$node["Node Name"].json`, `$workflow`, and
-  `$itemIndex`. `$now` and `$today` are Luxon `DateTime` objects, so methods
-  such as `.minus()` and `.toFormat()` work.
-- Published legacy workflow templates without per-node IDs and with string
-  credential names are accepted. Credentials are descriptive only and never
-  used for real authentication.
-- Code nodes support `$getWorkflowStaticData(type)` within one execution. State
-  is not persisted across executions.
-
-Node support is intentionally layered rather than a yes/no claim. A node can
-have local execution semantics, opt-in stateful service emulation, injected
-output, or generic mock-only handling. Unknown executable node types are not
-rejected. See [Node support tiers](docs/node-support.md) before interpreting a
-successful simulation as behavioral coverage.
-
-## Mock data
-
-- A `mockKey` is normally the node name. I/O nodes processing multiple items
-  can use `"<nodeName>#<itemIndex>"`; missing item-specific keys fall back to
-  the plain node name.
-- Webhooks and unmodeled triggers used as start nodes prefer `--input` and do
-  not request a mock when input is provided.
-- Existing n8n `pinData` in the workflow export overrides execution for the
-  named node. This is the broadest injection mechanism and works for built-in,
-  emulated, and otherwise unmodeled node types.
-
-## Development
+Export a workflow as JSON from n8n, then run:
 
 ```bash
-bun run check          # English policy + lint + typecheck + tests
-bun run check:english  # reject Japanese in tracked repository text
-bun run lint           # biome check .
-bun run lint:fix       # biome check --write .
-bun run typecheck      # tsc --noEmit
-bun run test           # bun test
-bun run audit:corpus <directory> # privacy-safe node frequency and support-tier audit
-bun run build          # compile dist/s8n
-bun run quality:emulator # message, thread, user, and Vercel Labs oracle checks
-bun run quality:services # GWS/GCP/Notion/Jira/GitHub state and oracle checks
-bun run quality:real-services # five reviewed public multi-service workflows
-bun run quality:community # trusted-only legacy two-template execution check
-bun run quality:corpus    # safely simulate a fixed corpus of 100 public templates
-bun run quality        # complete release gate, including standalone build
+./dist/s8n validate path/to/workflow.json
+./dist/s8n run path/to/workflow.json
 ```
 
-Pull requests run separate lint, build, and test workflows. Version tags of
-the form `vX.Y.Z` run the release workflow, which re-runs the local checks and
-publishes standalone Linux, macOS, and Windows executables plus SHA-256
-checksums. See [CONTRIBUTING.md](CONTRIBUTING.md) for the contributor and
-release checklist.
+If an external node needs data, the run returns `needs_mock` and tells you the
+required key and expected shape. Put a synthetic response in `mocks.json`:
 
-`quality:community` fetches currently published workflows from the official n8n
-template API at test time and never vendors third-party workflow data. It
-executes template 371 with synthetic GitHub release input and requires the
-resolved Slack message to be present in emulator state. It also executes
-template 14034 and checks exact string, number, boolean, and date conversions.
-Because this legacy check executes downloaded expressions and Code-node
-JavaScript, it is no longer part of `bun run quality` and must only be run when
-the fetched definitions have been reviewed and trusted.
+```json
+{
+  "Fetch customer": {
+    "id": "customer-123",
+    "plan": "trial"
+  }
+}
+```
 
-`quality:corpus` fetches a reproducible snapshot of 100 highly-trending public
-templates and reports builtin versus mocked node visits. Because downloaded
-workflow JavaScript is untrusted, the corpus gate neutralizes expressions and
-mocks Code nodes instead of evaluating remote code in the local process.
+Then rerun:
 
-`quality:real-services` fetches five reviewed official n8n templates whose
-SHA-256 hashes are pinned in the gate. It rejects changed definitions, Code
-nodes, and expressions containing unsafe syntax or non-whitelisted calls before
-execution. The scenarios seed local service state and use deterministic mocks
-for remote HTTP and model responses, while service mutations are executed and
-read back through the stateful emulators. See
-[the real-service simulation report](docs/reports/real-service-simulation.md).
+```bash
+./dist/s8n run path/to/workflow.json --mocks mocks.json
+```
 
-Retained quality evidence is organized under `docs/reports/`, including the
-[release quality report](docs/reports/quality.md) and the
-[community sample report](docs/reports/community-sample-simulation.md).
+Repeat until the workflow succeeds. This request-and-rerun contract is designed
+to be easy for both people and external AI agents to follow.
 
-Files under `fixtures/` are original test workflows. Files under `examples/`
-are original documentation examples. They contain no copied private workflow
-data or source from another repository.
+## What s8n models
 
-All repository-facing prose, including documentation, comments, CLI output,
-schemas, fixtures, and test names, must be written in English. `bun run check`
-enforces this rule for tracked text files.
+| Workflow behavior | How s8n handles it |
+| --- | --- |
+| Common compute and control flow | Runs locally with built-in semantics |
+| HTTP Request and app integrations | Requests caller-provided mock output by default |
+| Supported service operations | Can use opt-in stateful emulation |
+| Existing n8n pinned data | Uses `pinData` directly |
+| Unknown executable node types | Uses the generic mock fallback |
 
-## Deliberate simplifications
+Built-in behavior includes triggers, Set, If, Filter, Switch, Merge, Code,
+Wait, Aggregate, Limit, Sort, Split Out, Loop Over Items, Date & Time, Remove
+Duplicates, Summarize, Stop and Error, and Respond to Webhook. Expressions
+cover common n8n values such as `$json`, `$input`, `$('NodeName')`, `$now`,
+`$today`, `$node`, `$workflow`, and `$itemIndex`.
 
-- A node runs after every required input slot has received a delivery. Multiple
-  sources connected to the same slot are alternatives, not cumulative
-  requirements.
-- Nodes receiving zero total items are skipped unless `alwaysOutputData` is
-  enabled, matching n8n's `executionOrder: "v1"` behavior.
-- Only one trigger runs per execution. Use `--start-node` when several entry
-  points exist.
-- Loop Over Items executes its body once per batch and follows a detected
-  back-edge. Nested loops and complete `pairedItem` tracking across iterations
-  remain unsupported.
-- Execute Workflow does not resolve or run a real sub-workflow; it uses the
-  generic mock fallback.
+Stateful emulation is available for selected AI, Slack, Google Workspace,
+Google Cloud, Notion, Jira, and GitHub operations. See:
+
+- [Node support tiers](docs/node-support.md) for the exact built-in node list,
+  injection mechanisms, and fallback behavior.
+- [Service emulation](docs/service-emulation.md) for supported operations,
+  seed formats, evidence contracts, and fidelity limits.
+
+## Command overview
+
+```text
+s8n run <workflowFile> [options]  Simulate a workflow
+s8n validate <workflowFile>       Validate schema and connections
+s8n schema [nodeType]             Inspect node parameters and mock requirements
+s8n init [--out file]             Create a minimal sample workflow
+```
+
+Useful `run` options:
+
+- `--input <file>` supplies initial trigger items.
+- `--mocks <file>` supplies synthetic external-node responses.
+- `--emulate <services|all>` enables selected in-memory service emulators.
+- `--emulator-seed <file>` supplies initial emulator state.
+- `--now <ISO timestamp>` makes time-dependent expressions reproducible.
+- `--start-node <name>` chooses one of multiple possible entry points.
+- `--execution-log` adds an n8n-shaped `resultData.runData` record.
+- `--truncate-data <count>` bounds retained execution-log items.
+
+Run `./dist/s8n --help` or `./dist/s8n run --help` for the complete CLI help.
+Every command writes exactly one machine-readable JSON envelope to stdout.
+
+## Safety and limitations
+
+- Workflow credentials are descriptive only and are never used.
+- External I/O is always mocked or emulated in-process.
 - Expression evaluation and Code nodes use `new Function` and are not
-  sandboxed. Run only trusted workflow JSON in this local single-user CLI.
+  sandboxed. Only run workflow JSON you trust.
+- Emulation does not reproduce authentication, authorization, rate limits,
+  pagination, webhooks, arbitrary BigQuery SQL, real model semantics, or AI
+  output quality.
+- Execute Workflow does not resolve a real sub-workflow.
+- Code-node static data lasts for one execution only.
+- Nested Loop Over Items flows and complete cross-iteration `pairedItem`
+  tracking are not supported.
+
+The project validates public workflow samples only after pinning or neutralizing
+untrusted executable content. See [Contributing](CONTRIBUTING.md) before adding
+downloaded workflow fixtures to a quality gate.
+
+## For contributors
+
+```bash
+bun run check    # public-content policy, language policy, formatting, types, tests
+bun run build    # standalone executable
+bun run quality  # complete release gate
+```
+
+Read [CONTRIBUTING.md](CONTRIBUTING.md) for development and release guidance.
+AI coding agents should start with [AGENTS.md](AGENTS.md). Detailed retained
+quality evidence is under [docs/reports](docs/reports/).
+
+## License
+
+[MIT](LICENSE)

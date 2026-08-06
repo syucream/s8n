@@ -16,11 +16,14 @@ export function findJapaneseText(text: string): JapaneseTextMatch[] {
   return matches;
 }
 
-async function trackedPaths(): Promise<string[]> {
-  const result = Bun.spawnSync(["git", "ls-files", "-z"], {
-    stdout: "pipe",
-    stderr: "pipe",
-  });
+async function repositoryPaths(): Promise<string[]> {
+  const result = Bun.spawnSync(
+    ["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"],
+    {
+      stdout: "pipe",
+      stderr: "pipe",
+    },
+  );
   if (result.exitCode !== 0) {
     throw new Error(new TextDecoder().decode(result.stderr).trim());
   }
@@ -31,9 +34,9 @@ async function trackedPaths(): Promise<string[]> {
 async function main(): Promise<void> {
   const violations: string[] = [];
 
-  for (const path of await trackedPaths()) {
+  for (const path of await repositoryPaths()) {
     if (JAPANESE_CHARACTER.test(path)) {
-      violations.push(`${path}: Japanese characters in tracked file name`);
+      violations.push(`${path}: Japanese characters in repository file name`);
     }
 
     const file = Bun.file(path);
