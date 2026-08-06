@@ -12,15 +12,13 @@ coverage
 
 # logs
 logs
+*.log
 _.log
 report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 
 # dotenv environment variable files
-.env
-.env.development.local
-.env.test.local
-.env.production.local
-.env.local
+.env*
+!.env.example
 
 # caches
 .eslintcache
@@ -30,8 +28,22 @@ report.[0-9]_.[0-9]_.[0-9]_.[0-9]_.json
 # IntelliJ based IDEs
 .idea
 
-# local editor rules
+# local editor and AI-agent state
 .cursor
+.agents
+.claude
+.codex
+.gemini
+.vscode
+.zed
+
+# private keys and certificates
+*.key
+*.p12
+*.pfx
+*.pem
+id_rsa
+id_rsa.*
 
 # Finder (MacOS) folder config
 .DS_Store

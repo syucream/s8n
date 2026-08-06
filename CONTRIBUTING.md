@@ -21,10 +21,10 @@ bun run build
 ./dist/s8n --version
 ```
 
-`bun run check` applies the English-language repository policy, Biome checks,
-TypeScript type checking, and the Bun test suite. The standalone build is a
-separate required check because a type-correct CLI can still fail during Bun
-compilation.
+`bun run check` scans repository files for high-confidence public-content
+risks, applies the English-language policy, runs Biome and TypeScript checks,
+and runs the Bun test suite. The standalone build is a separate required check
+because a type-correct CLI can still fail during Bun compilation.
 
 Use `bun run quality` for release-level changes to the execution engine,
 emulators, expression handling, or supported node contracts. Some quality
@@ -33,6 +33,8 @@ read their safety notes in the README before changing those policies.
 
 ## Pull requests
 
+- Direct pushes to `main` are not accepted. Work on a focused branch and merge
+  changes through a pull request.
 - Keep unrelated working-tree changes out of the commit.
 - Add normal and failure-path tests for behavior changes.
 - Update `docs/node-support.md` when a node changes support tier or an emulator
