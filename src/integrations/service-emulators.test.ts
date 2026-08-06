@@ -139,9 +139,14 @@ describe("stateful service emulators", () => {
       },
     );
     expect(generated?.output).toMatchObject({
-      model: "gemini-2.5-flash",
+      modelMetadata: { present: true, kind: "string", sizeBucket: "short" },
+      promptMetadata: { present: true, kind: "string", sizeBucket: "short" },
       finishReason: "STOP",
     });
+    expect(JSON.stringify(generated?.effect)).not.toContain(
+      "Summarize quality evidence",
+    );
+    expect(JSON.stringify(generated?.effect)).not.toContain("gemini-2.5-flash");
   });
 
   test("GWS emulates Sheets, Gmail, Calendar, and Docs", async () => {

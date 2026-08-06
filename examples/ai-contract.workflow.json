@@ -1,0 +1,84 @@
+{
+  "name": "AI contract example",
+  "nodes": [
+    {
+      "id": "trigger",
+      "name": "Trigger",
+      "type": "n8n-nodes-base.manualTrigger",
+      "parameters": {}
+    },
+    {
+      "id": "classify",
+      "name": "Classify request",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 3,
+      "parameters": {
+        "promptType": "define",
+        "text": "=Classify this request: {{ $json.request }}",
+        "hasOutputParser": true,
+        "options": {
+          "systemMessage": "Return only the requested structured result."
+        }
+      }
+    },
+    {
+      "id": "model",
+      "name": "Chat model",
+      "type": "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+      "typeVersion": 1.3,
+      "parameters": {
+        "modelId": {
+          "value": "gpt-example"
+        },
+        "options": {
+          "temperature": 0
+        }
+      }
+    },
+    {
+      "id": "parser",
+      "name": "Result schema",
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "parameters": {
+        "schemaType": "fromJson",
+        "jsonSchemaExample": "{\"category\":\"support\",\"urgent\":true}"
+      }
+    }
+  ],
+  "connections": {
+    "Trigger": {
+      "main": [
+        [
+          {
+            "node": "Classify request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Chat model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Classify request",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Result schema": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "Classify request",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  }
+}

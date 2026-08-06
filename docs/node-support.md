@@ -44,12 +44,13 @@ The source of truth for registration is `src/nodes/registry.ts`.
 Stateful emulation is opt-in and stays inside the s8n process:
 
 ```bash
-s8n run workflow.json --emulate slack,gws,gcp,notion,jira,github
+s8n run workflow.json --emulate ai,slack,gws,gcp,notion,jira,github
 s8n run workflow.json --emulate all --emulator-seed seed.json
 ```
 
 | Family | Recognized node families | Modeled state |
 | --- | --- | --- |
+| `ai` | LangChain Agent/Chain roots with connected chat models and parsers | resolved prompt/model request, caller-supplied model response, n8n-style root output, structured-output parsing and schema validation |
 | `slack` | Slack | messages, thread replies, updates, users |
 | `gws` | Google Sheets, Drive, Gmail, Calendar, Docs | rows, files, messages, events, documents |
 | `gcp` | BigQuery, Google Cloud Storage, Vertex/Gemini | rows and queries, buckets and objects, deterministic model invocation records |
@@ -61,6 +62,14 @@ Coverage is operation-specific. Merely recognizing a service family does not
 mean every resource, operation, or API edge case is emulated. Unsupported
 operations continue to Tier 3/4 mock handling. The detailed operation and
 fidelity boundaries are in [service-emulation.md](service-emulation.md).
+
+AI emulation deliberately mocks the model boundary rather than inventing a
+plausible completion. Put the raw model response under the Agent/Chain node
+name in `--mocks`, then run with `--emulate ai`. s8n resolves the prompt and
+system message, records privacy-safe size metadata plus tool/memory counts, and
+applies a connected Structured Output Parser. Invalid JSON, missing required
+fields, and type mismatches fail the node. Prompt, system-message, model, and
+fixture contents are not copied into the effect log.
 
 The Vercel Labs `emulate` package is an independent quality-gate oracle for
 selected Slack, GitHub, and Google Workspace behavior. It is not a runtime

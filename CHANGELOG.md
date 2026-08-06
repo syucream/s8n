@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.0 - 2026-08-06
+
+- Add fixture-driven AI Agent and Chain contract emulation across connected
+  language models, tools, memory, and output parsers.
+- Validate Structured Output Parser results against JSON Schema and example
+  output contracts.
+- Keep AI effects privacy-safe by exposing only coarse content metadata and
+  aggregate connection counts.
+- Add a privacy-safe workflow corpus audit that ranks official node types while
+  aggregating custom node types into a single category.
+- Add a generic runnable AI workflow example and privacy regression coverage.
+
 ## 0.4.0 - 2026-08-05
 
 - Add opt-in stateful emulation for Google Workspace, Google Cloud Platform,

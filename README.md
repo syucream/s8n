@@ -9,13 +9,13 @@ server and never performs real external I/O.
 
 - External integrations use agent-supplied mocks by default. Supported
   integrations can instead use opt-in, stateful in-memory emulation.
-- `--emulate all` enables stateful local Slack, GWS, GCP, Notion, Jira, and
-  GitHub contracts. Mutations are read back before a side effect is reported as
+- `--emulate all` enables local AI, Slack, GWS, GCP, Notion, Jira, and GitHub
+  contracts. Mutations are read back before a side effect is reported as
   verified; no account, credential, local server, extra process, or network
   request is used.
-- The CLI contains no AI features. It is designed for an external AI agent to
-  run a workflow, inspect missing mock requests, generate synthetic data, and
-  rerun the workflow.
+- The CLI contains no language model. It is designed for an external AI agent
+  to provide model fixtures, inspect missing mock requests, generate synthetic
+  data, and rerun the workflow.
 - Bun can compile it into a single executable with `bun build --compile`.
 - Supported node fields, defaults, and branch behavior are implemented against
   upstream n8n source rather than inferred parameter shapes.
@@ -49,7 +49,7 @@ by parsing that envelope.
 Simulate a workflow:
 
 ```bash
-s8n run workflow.json [--input input.json] [--mocks mocks.json] [--emulate slack,gws,gcp,notion,jira,github|all] [--emulator-seed seed.json] [--now 2026-01-01T00:00:00Z] [--start-node "Node Name"] [--execution-log] [--truncate-data 10]
+s8n run workflow.json [--input input.json] [--mocks mocks.json] [--emulate ai,slack,gws,gcp,notion,jira,github|all] [--emulator-seed seed.json] [--now 2026-01-01T00:00:00Z] [--start-node "Node Name"] [--execution-log] [--truncate-data 10]
 ```
 
 - `--input`: Initial items passed to the trigger node. Accepts one JSON object
@@ -180,6 +180,7 @@ bun run lint           # biome check .
 bun run lint:fix       # biome check --write .
 bun run typecheck      # tsc --noEmit
 bun run test           # bun test
+bun run audit:corpus <directory> # privacy-safe node frequency and support-tier audit
 bun run build          # compile dist/s8n
 bun run quality:emulator # message, thread, user, and Vercel Labs oracle checks
 bun run quality:services # GWS/GCP/Notion/Jira/GitHub state and oracle checks

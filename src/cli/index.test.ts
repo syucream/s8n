@@ -141,7 +141,7 @@ describe("s8n CLI", () => {
     ]);
     expect(exitCode).toBe(1);
     expect(JSON.parse(stdout).error).toContain(
-      "Supported services: slack, gws, gcp, notion, jira, github, all",
+      "Supported services: ai, slack, gws, gcp, notion, jira, github, all",
     );
   });
 });

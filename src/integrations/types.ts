@@ -27,6 +27,7 @@ export interface IntegrationRunner {
 }
 
 export const EMULATED_SERVICES = [
+  "ai",
   "slack",
   "gws",
   "gcp",

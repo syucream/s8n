@@ -5,7 +5,7 @@ families that most often determine whether a workflow behaves correctly after
 deployment. Enable one or more comma-separated families, or all of them:
 
 ```bash
-s8n run workflow.json --emulate gws,gcp,notion,jira,github
+s8n run workflow.json --emulate ai,gws,gcp,notion,jira,github
 s8n run workflow.json --emulate all
 s8n run workflow.json --emulate notion --emulator-seed seed.json
 ```
@@ -30,6 +30,7 @@ the emulator honest: it does not claim fidelity for behavior it does not model.
 
 | Family | Node types recognized | Stateful surfaces |
 | --- | --- | --- |
+| `ai` | LangChain chat models connected to Agent or Chain roots | privacy-safe request size metadata and invocation record; fixture-driven response formatting and Structured Output Parser validation |
 | `slack` | Slack | messages, thread replies, updates, user lookup |
 | `gws` | Google Drive, Sheets, Gmail, Calendar, Docs | files, rows, sent messages, events, documents |
 | `gcp` | BigQuery, Google Cloud Storage, Vertex/Gemini node types | table rows and queries, objects, deterministic model invocation records |
@@ -49,6 +50,40 @@ n8n expressions. Each emulated call emits an `effects[]` entry containing:
 This is designed as compact evidence for an external AI agent. The agent can
 submit the complete command envelope without interpreting logs or accessing a
 separate inspector.
+
+## AI contract emulation
+
+AI emulation stops at the model boundary. Supply a deterministic raw completion
+under the root Agent or Chain node name, not a preformatted final node item:
+
+```json
+{
+  "Analyze request": "{\"output\":{\"category\":\"support\",\"urgent\":true}}"
+}
+```
+
+Run the workflow with `--emulate ai --mocks model-responses.json`. s8n resolves
+the root prompt and system message for every input item, records only coarse
+size/kind metadata plus model/options/tool/memory counts without values, and
+returns the n8n-style Agent or Chain output shape. When `hasOutputParser` is
+enabled and a Structured Output Parser is connected, the raw completion is
+parsed like n8n's parser, including JSON code fences, then checked against
+either `inputSchema`/legacy `jsonSchema` or the shape inferred from
+`jsonSchemaExample`.
+
+This proves prompt assembly and downstream data contracts without pretending a
+deterministic local string generator has real model semantics. It does not
+execute an autonomous tool-call loop or assess answer quality; use multiple
+reviewed model fixtures for those cases.
+
+The repository includes a complete runnable example:
+
+```bash
+s8n run examples/ai-contract.workflow.json \
+  --input examples/ai-contract.input.json \
+  --mocks examples/ai-contract.model-responses.json \
+  --emulate ai
+```
 
 ## Existing emulator compatibility and ROI
 

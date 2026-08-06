@@ -30,6 +30,34 @@ function clone<T>(input: T): T {
   return structuredClone(input);
 }
 
+function contentMetadata(raw: unknown): {
+  present: boolean;
+  kind: "string" | "array" | "object" | "scalar";
+  sizeBucket: "empty" | "short" | "medium" | "long";
+} {
+  const source = typeof raw === "string" ? raw : JSON.stringify(raw ?? "");
+  const kind =
+    typeof raw === "string"
+      ? "string"
+      : Array.isArray(raw)
+        ? "array"
+        : raw !== null && typeof raw === "object"
+          ? "object"
+          : "scalar";
+  return {
+    present: source.length > 0,
+    kind,
+    sizeBucket:
+      source.length === 0
+        ? "empty"
+        : source.length <= 128
+          ? "short"
+          : source.length <= 4096
+            ? "medium"
+            : "long",
+  };
+}
+
 function result(
   node: WorkflowNode,
   service: EmulatedService,
@@ -186,6 +214,10 @@ export class ServiceEmulators {
     inputItem?: Item,
   ): EmulatedIntegrationResult | undefined {
     const type = node.type.toLowerCase();
+    if (enabled.has("ai")) {
+      const ai = this.executeAiModel(node, type, parameters);
+      if (ai) return ai;
+    }
     if (enabled.has("gws")) {
       const gws = this.executeGws(node, type, parameters, inputItem?.json);
       if (gws) return gws;
@@ -201,6 +233,50 @@ export class ServiceEmulators {
     if (enabled.has("github") && type.includes("github"))
       return this.executeGithub(node, parameters, inputItem?.json);
     return undefined;
+  }
+
+  private executeAiModel(
+    node: WorkflowNode,
+    type: string,
+    p: Json,
+  ): EmulatedIntegrationResult | undefined {
+    const isLanguageModel =
+      type.startsWith("@n8n/n8n-nodes-langchain.lm") ||
+      [
+        "@n8n/n8n-nodes-langchain.openai",
+        "@n8n/n8n-nodes-langchain.googlegemini",
+      ].includes(type);
+    if (!isLanguageModel || p.simulatedResponse === undefined) return undefined;
+
+    const prompt = text(p.prompt ?? p.text ?? p.messages ?? p.input);
+    if (!prompt) throw new Error("AI model prompt is empty");
+    const model =
+      value(p.modelName ?? p.modelId ?? p.model) ||
+      node.type.split(".").at(-1) ||
+      "local-model";
+    const invocation = {
+      id: this.id("ai-call"),
+      providerNodeType: node.type,
+      modelMetadata: contentMetadata(model),
+      promptMetadata: contentMetadata(prompt),
+      systemMessageMetadata: contentMetadata(p.systemMessage ?? ""),
+      optionCount: Object.keys(object(p.options)).length,
+      toolCount: Array.isArray(p.tools) ? p.tools.length : 0,
+      memoryCount: Array.isArray(p.memory) ? p.memory.length : 0,
+    };
+    const calls = this.store("ai.invocations");
+    calls.set(invocation.id, invocation);
+    const emulated = result(
+      node,
+      "ai",
+      "models.generate",
+      invocation,
+      contentMetadata(p.simulatedResponse),
+      "ai.invocations.get",
+      this.require(calls, invocation.id, "AI invocation"),
+    );
+    emulated.output = clone(p.simulatedResponse);
+    return emulated;
   }
 
   private executeGws(
@@ -530,20 +606,18 @@ export class ServiceEmulators {
     if (type.includes("vertex") || type.includes("googlegemini")) {
       const prompt = text(p.prompt ?? p.text ?? p.messages ?? p.input);
       if (!prompt) throw new Error("Vertex AI prompt is empty");
+      const model = value(p.modelName ?? p.model) || "gemini-local";
       const invocation = {
         id: this.id("prediction"),
-        model: value(p.modelName ?? p.model) || "gemini-local",
-        prompt,
-        text: `[s8n vertex emulator] ${prompt}`,
-        output: `[s8n vertex emulator] ${prompt}`,
+        modelMetadata: contentMetadata(model),
+        promptMetadata: contentMetadata(prompt),
+        text: "[s8n vertex emulator]",
+        output: "[s8n vertex emulator]",
         finishReason: "STOP",
         usageMetadata: {
-          promptTokenCount: prompt.split(/\s+/).length,
+          promptSizeBucket: contentMetadata(prompt).sizeBucket,
           candidatesTokenCount: 4,
         },
-        ...(p.simulatedResponse === undefined
-          ? {}
-          : { simulatedResponse: p.simulatedResponse }),
       };
       const calls = this.store("gcp.vertex.invocations");
       calls.set(String(invocation.id), invocation);
@@ -551,7 +625,7 @@ export class ServiceEmulators {
         node,
         "gcp",
         "vertex.models.generateContent",
-        p,
+        invocation,
         invocation,
         "vertex.invocations.get",
         this.require(calls, String(invocation.id), "Vertex invocation"),

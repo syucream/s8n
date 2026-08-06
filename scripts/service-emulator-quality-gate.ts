@@ -390,8 +390,11 @@ const gcpPriorityPassed =
   gcpOperations.includes("bigquery.jobs.query") &&
   gcpOperations.includes("vertex.models.generateContent") &&
   gcpPriority.effects.every((effect) => effect.verified) &&
-  (gcpPriority.nodeOutputs["Invoke Vertex AI"]?.[0]?.json.prompt as string) ===
-    "Summarize priority evidence";
+  (
+    gcpPriority.nodeOutputs["Invoke Vertex AI"]?.[0]?.json.promptMetadata as {
+      sizeBucket?: string;
+    }
+  )?.sizeBucket === "short";
 if (!gcpPriorityPassed)
   throw new Error("BigQuery-to-Vertex priority scenario failed");
 

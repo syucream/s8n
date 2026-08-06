@@ -53,8 +53,16 @@ export interface RuntimeContext {
   workflowStaticData: Map<string, Record<string, unknown>>;
   /** Optional, explicitly enabled local service emulator bridge. */
   integrationRunner?: IntegrationRunner;
-  /** AI language-model subnodes connected to each root Agent/Chain node. */
-  integrationSubnodes?: Map<string, WorkflowNode[]>;
+  /** AI subnodes connected to each root Agent/Chain node, grouped by port. */
+  integrationSubnodes?: Map<
+    string,
+    Partial<
+      Record<
+        "ai_languageModel" | "ai_outputParser" | "ai_tool" | "ai_memory",
+        WorkflowNode[]
+      >
+    >
+  >;
   /** Verified local side effects emitted by integration emulators. */
   integrationEffects: IntegrationEffect[];
 }

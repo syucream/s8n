@@ -1,4 +1,5 @@
 import { resolveParameterValue } from "../../expression/evaluator.ts";
+import { formatAiRootOutput } from "../../integrations/ai-contract.ts";
 import { findNodeTypeMockHint } from "../../mock/node-type-hints.ts";
 import { normalizeMockToItems } from "../../mock/normalize.ts";
 import { lookupItemMock } from "../../mock/provider.ts";
@@ -91,13 +92,17 @@ export async function executeGenericFallback(
         }
 
         let handledBySubnode = false;
-        for (const subnode of runtime.integrationSubnodes?.get(node.name) ??
-          []) {
+        const aiSubnodes = runtime.integrationSubnodes?.get(node.name);
+        for (const subnode of aiSubnodes?.ai_languageModel ?? []) {
           const subnodeParameters = resolveParameterValue(
             subnode.parameters,
             scope,
           ) as Record<string, unknown>;
           const parent = resolvedParams as Record<string, unknown>;
+          const parentOptions =
+            parent.options !== null && typeof parent.options === "object"
+              ? (parent.options as Record<string, unknown>)
+              : {};
           const prompt =
             parent.text ??
             parent.prompt ??
@@ -116,13 +121,32 @@ export async function executeGenericFallback(
             {
               ...subnodeParameters,
               ...(prompt === undefined ? {} : { prompt }),
+              ...(parentOptions.systemMessage === undefined
+                ? {}
+                : { systemMessage: parentOptions.systemMessage }),
+              tools: (aiSubnodes?.ai_tool ?? []).map((tool) => ({
+                name: tool.name,
+                type: tool.type,
+              })),
+              memory: (aiSubnodes?.ai_memory ?? []).map((memory) => ({
+                name: memory.name,
+                type: memory.type,
+              })),
               ...(simulatedResponse === undefined ? {} : { simulatedResponse }),
             },
             item,
           );
           if (subnodeResult) {
             runtime.integrationEffects.push(subnodeResult.effect);
-            outputItems.push(...normalizeMockToItems(subnodeResult.output, i));
+            const parser =
+              parent.hasOutputParser === true
+                ? aiSubnodes?.ai_outputParser?.[0]
+                : undefined;
+            const formatted =
+              subnodeResult.effect.service === "ai"
+                ? formatAiRootOutput(node, subnodeResult.output, parser)
+                : subnodeResult.output;
+            outputItems.push(...normalizeMockToItems(formatted, i));
             handledBySubnode = true;
             break;
           }

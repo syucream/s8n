@@ -1551,7 +1551,7 @@ describe("runWorkflow", () => {
     });
     expect(result.status).toBe("success");
     expect(result.nodeOutputs.Summarize?.[0]?.json).toMatchObject({
-      prompt: "Summarize release evidence",
+      promptMetadata: { present: true, kind: "string", sizeBucket: "short" },
       finishReason: "STOP",
     });
     expect(result.effects[0]).toMatchObject({
@@ -1559,6 +1559,93 @@ describe("runWorkflow", () => {
       operation: "vertex.models.generateContent",
       verified: true,
     });
+    expect(JSON.stringify(result.effects)).not.toContain("release evidence");
+  });
+
+  test("AI emulation assembles the request and enforces a connected structured parser", async () => {
+    const workflow = wf({
+      name: "AI contract",
+      nodes: [
+        {
+          name: "Trigger",
+          type: "n8n-nodes-base.manualTrigger",
+          parameters: {},
+        },
+        {
+          name: "Analyze",
+          type: "@n8n/n8n-nodes-langchain.agent",
+          typeVersion: 3,
+          parameters: {
+            promptType: "define",
+            text: "=Analyze {{$json.subject}}",
+            hasOutputParser: true,
+            options: { systemMessage: "Return evidence" },
+          },
+        },
+        {
+          name: "Model",
+          type: "@n8n/n8n-nodes-langchain.lmChatOpenAi",
+          parameters: { modelId: { value: "gpt-test" }, options: {} },
+        },
+        {
+          name: "Parser",
+          type: "@n8n/n8n-nodes-langchain.outputParserStructured",
+          typeVersion: 1.3,
+          parameters: {
+            schemaType: "fromJson",
+            jsonSchemaExample: '{"summary":"","passed":true}',
+          },
+        },
+      ],
+      connections: {
+        Trigger: { main: [[{ node: "Analyze", type: "main", index: 0 }]] },
+        Model: {
+          ai_languageModel: [
+            [{ node: "Analyze", type: "ai_languageModel", index: 0 }],
+          ],
+        },
+        Parser: {
+          ai_outputParser: [
+            [{ node: "Analyze", type: "ai_outputParser", index: 0 }],
+          ],
+        },
+      },
+    });
+    const integrationRunner = await EmulatorIntegrationRunner.create(["ai"]);
+    const result = await runWorkflow(workflow, {
+      initialInput: toItems([{ subject: "release evidence" }]),
+      hasExplicitInput: true,
+      mocks: createMockLookup({
+        Analyze: '{"output":{"summary":"ready","passed":true}}',
+      }),
+      registry,
+      integrationRunner,
+    });
+    expect(result.status).toBe("success");
+    expect(result.nodeOutputs.Analyze?.[0]?.json).toEqual({
+      output: { summary: "ready", passed: true },
+    });
+    expect(result.effects[0]).toMatchObject({
+      nodeName: "Model",
+      service: "ai",
+      operation: "models.generate",
+      request: {
+        modelMetadata: { present: true, kind: "string", sizeBucket: "short" },
+        promptMetadata: { present: true, kind: "string", sizeBucket: "short" },
+        systemMessageMetadata: {
+          present: true,
+          kind: "string",
+          sizeBucket: "short",
+        },
+        optionCount: 0,
+        toolCount: 0,
+        memoryCount: 0,
+      },
+      verified: true,
+    });
+    expect(JSON.stringify(result.effects)).not.toContain("release evidence");
+    expect(JSON.stringify(result.effects)).not.toContain("Return evidence");
+    expect(JSON.stringify(result.effects)).not.toMatch(/[a-f0-9]{64}/);
   });
 
   test("pinData bypasses the real executor", async () => {

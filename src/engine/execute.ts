@@ -246,17 +246,27 @@ export async function runWorkflow(
     integrationSubnodes: new Map(),
     integrationEffects: [],
   };
+  const aiConnectionTypes = [
+    "ai_languageModel",
+    "ai_outputParser",
+    "ai_tool",
+    "ai_memory",
+  ] as const;
   for (const [sourceName, connectionTypes] of Object.entries(
     workflow.connections,
   )) {
     const sourceNode = nodesByName.get(sourceName);
     if (!sourceNode) continue;
-    for (const slot of connectionTypes.ai_languageModel ?? []) {
-      for (const destination of slot) {
-        const connected =
-          runtime.integrationSubnodes?.get(destination.node) ?? [];
-        connected.push(sourceNode);
-        runtime.integrationSubnodes?.set(destination.node, connected);
+    for (const connectionType of aiConnectionTypes) {
+      for (const slot of connectionTypes[connectionType] ?? []) {
+        for (const destination of slot) {
+          const connected =
+            runtime.integrationSubnodes?.get(destination.node) ?? {};
+          const nodes = connected[connectionType] ?? [];
+          nodes.push(sourceNode);
+          connected[connectionType] = nodes;
+          runtime.integrationSubnodes?.set(destination.node, connected);
+        }
       }
     }
   }
