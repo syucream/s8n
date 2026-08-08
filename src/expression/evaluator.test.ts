@@ -54,6 +54,21 @@ describe("evaluateExpressionString", () => {
     ).toThrow();
   });
 
+  test("does not expose host I/O globals to expressions", () => {
+    expect(
+      evaluateExpressionString(
+        "={{ [typeof fetch, typeof process, typeof Bun, typeof require, typeof globalThis.fetch] }}",
+        scopeFor({}),
+      ),
+    ).toEqual([
+      "undefined",
+      "undefined",
+      "undefined",
+      "undefined",
+      "undefined",
+    ]);
+  });
+
   test("supports n8n's parseJson string helper used by published workflows", () => {
     const scope = scopeFor({
       result: { message: '{"title":"Fix checkout"}' },
@@ -66,12 +81,30 @@ describe("evaluateExpressionString", () => {
     ).toBe("Fix checkout");
   });
 
+  test("supports n8n's object keys helper used by workflow expressions", () => {
+    expect(
+      evaluateExpressionString(
+        "={{ $json.profile.keys().sort() }}",
+        scopeFor({ profile: { role: "engineer", level: 2 } }),
+      ),
+    ).toEqual(["level", "role"]);
+  });
+
   test("$now is a Luxon DateTime supporting real n8n date arithmetic", () => {
     const result = evaluateExpressionString(
       "={{$now.minus({days: 7}).toFormat('yyyy-MM-dd')}}",
       scopeFor({}),
     );
     expect(result).toBe("2025-12-25");
+  });
+
+  test("exposes Luxon DateTime for explicit parsing used by n8n workflows", () => {
+    expect(
+      evaluateExpressionString(
+        "={{ DateTime.fromISO($json.startDate).toISODate() }}",
+        scopeFor({ startDate: "2026-08-01T00:00:00.000Z" }),
+      ),
+    ).toBe("2026-08-01");
   });
 
   test("supports n8n's DateTime format alias used by published workflows", () => {

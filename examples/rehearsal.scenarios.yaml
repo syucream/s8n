@@ -1,0 +1,24 @@
+version: 1
+defaults:
+  now: "2026-01-01T00:00:00.000Z"
+cases:
+  - name: high-tier
+    input:
+      amount: 150
+    assertions:
+      requiredNodes: [High Tier]
+      forbiddenNodes: [Standard Tier]
+      nodeOutputs:
+        - node: High Tier
+          pointer: /json/tier
+          equals: high
+  - name: standard-tier
+    input:
+      amount: 25
+    assertions:
+      requiredNodes: [Standard Tier]
+      forbiddenNodes: [High Tier]
+      nodeOutputs:
+        - node: Standard Tier
+          pointer: /json/tier
+          equals: standard

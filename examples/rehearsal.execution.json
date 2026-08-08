@@ -1,0 +1,31 @@
+{
+  "status": "success",
+  "startedAt": "2026-01-01T00:00:00.000Z",
+  "data": {
+    "startData": { "destinationNode": "Start" },
+    "resultData": {
+      "runData": {
+        "Start": [
+          {
+            "executionIndex": 0,
+            "data": { "main": [[{ "json": { "amount": 25 } }]] }
+          }
+        ],
+        "Choose Tier": [
+          {
+            "executionIndex": 1,
+            "data": { "main": [[], [{ "json": { "amount": 25 } }]] }
+          }
+        ],
+        "Standard Tier": [
+          {
+            "executionIndex": 2,
+            "data": {
+              "main": [[{ "json": { "amount": 25, "tier": "standard" } }]]
+            }
+          }
+        ]
+      }
+    }
+  }
+}

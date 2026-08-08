@@ -8,6 +8,7 @@ import { extractReferencedJsonFields } from "../mock/field-hints.ts";
 import { executeGenericFallback } from "../nodes/builtin/generic-fallback.ts";
 import type { NodeRegistry } from "../nodes/registry.ts";
 import type {
+  ExecuteArgs,
   MockLookup,
   NodeExecuteResult,
   NodeExecutor,
@@ -37,6 +38,12 @@ export interface RunOptions {
   startNode?: string;
   /** Explicit local service emulation. External network I/O remains disabled. */
   integrationRunner?: IntegrationRunner;
+  /** Explicit reference-to-workflow mapping used for local sub-workflow execution. */
+  workflowMap?: ReadonlyMap<string, Workflow>;
+  /** Maximum number of nested mapped workflow calls. Defaults to 10. */
+  subWorkflowDepthLimit?: number;
+  /** Internal reference chain used to detect cycles across recursive runs. */
+  subWorkflowReferenceStack?: string[];
 }
 
 export type NodeTraceStatus =
@@ -58,6 +65,10 @@ export type NodeTraceStatus =
  * start node that needs mock data.
  */
 const NON_EXECUTABLE_NODE_TYPES = new Set(["n8n-nodes-base.stickyNote"]);
+const EXECUTE_WORKFLOW_NODE_TYPE = "n8n-nodes-base.executeWorkflow";
+const EXECUTE_WORKFLOW_TRIGGER_NODE_TYPE =
+  "n8n-nodes-base.executeWorkflowTrigger";
+const DEFAULT_SUB_WORKFLOW_DEPTH_LIMIT = 10;
 
 export interface NodeTraceEntry {
   nodeName: string;
@@ -111,6 +122,17 @@ export interface StartNodeCandidate {
   type: string;
 }
 
+export interface SubExecutionSummary {
+  callNodeName: string;
+  reference: string;
+  workflowName: string;
+  status: RunResult["status"];
+  traceStatusCounts: Partial<Record<NodeTraceStatus, number>>;
+  pendingMockCount: number;
+  errors: string[];
+  nested: SubExecutionSummary[];
+}
+
 export interface RunResult {
   status: "success" | "error" | "needs_mock" | "needs_start_node";
   workflowName: string;
@@ -120,6 +142,8 @@ export interface RunResult {
   errors: string[];
   /** Stateful local integration effects that were confirmed by reading emulator state. */
   effects: IntegrationEffect[];
+  /** AI-readable evidence for explicitly mapped child workflow executions. */
+  subExecutions: SubExecutionSummary[];
   /** Populated only when status is "needs_start_node": pass one of these names via `startNode`. */
   startNodeCandidates?: StartNodeCandidate[];
 }
@@ -149,6 +173,50 @@ async function runNodeWithRetry(
   return lastResult;
 }
 
+function extractWorkflowReference(workflowId: unknown): string | undefined {
+  if (typeof workflowId === "string" && workflowId.length > 0) {
+    return workflowId;
+  }
+  if (
+    workflowId !== null &&
+    typeof workflowId === "object" &&
+    "value" in workflowId &&
+    typeof workflowId.value === "string" &&
+    workflowId.value.length > 0
+  ) {
+    return workflowId.value;
+  }
+  return undefined;
+}
+
+function terminalOutput(workflow: Workflow, result: RunResult): Item[][] {
+  const nodesWithMainDestinations = new Set<string>();
+  for (const [sourceName, connections] of Object.entries(
+    workflow.connections,
+  )) {
+    if ((connections.main ?? []).some((slot) => (slot?.length ?? 0) > 0)) {
+      nodesWithMainDestinations.add(sourceName);
+    }
+  }
+
+  const output = workflow.nodes.flatMap((node) =>
+    nodesWithMainDestinations.has(node.name)
+      ? []
+      : (result.nodeOutputs[node.name] ?? []),
+  );
+  return [output];
+}
+
+function traceStatusCounts(
+  trace: NodeTraceEntry[],
+): Partial<Record<NodeTraceStatus, number>> {
+  const counts: Partial<Record<NodeTraceStatus, number>> = {};
+  for (const entry of trace) {
+    counts[entry.status] = (counts[entry.status] ?? 0) + 1;
+  }
+  return counts;
+}
+
 export async function runWorkflow(
   workflow: Workflow,
   options: RunOptions,
@@ -169,6 +237,7 @@ export async function runWorkflow(
   let executionIndex = 0;
   const pendingMocks: PendingMockRequest[] = [];
   const errors: string[] = [];
+  const subExecutions: SubExecutionSummary[] = [];
   for (const node of workflow.nodes) {
     const slots = graph.requiredSlots.get(node.name) ?? 1;
     pendingData.set(
@@ -219,6 +288,7 @@ export async function runWorkflow(
               ]
             : [],
       effects: [],
+      subExecutions: [],
       startNodeCandidates: executableStartNodes.map((name) => ({
         name,
         type: nodesByName.get(name)?.type ?? "",
@@ -308,6 +378,249 @@ export async function runWorkflow(
 
   function cloneMainData(output: Item[][]): Item[][] {
     return structuredClone(output);
+  }
+
+  async function executeMappedSubWorkflow(
+    node: WorkflowNode,
+    inputItems: Item[],
+    buildScope: ExecuteArgs["buildScope"],
+  ): Promise<NodeExecuteResult> {
+    const scopeItems = inputItems.length > 0 ? inputItems : toItems([{}]);
+    let parameters: Record<string, unknown>;
+    try {
+      parameters = resolveParameterValue(
+        node.parameters,
+        buildScope(scopeItems[0] as Item, 0, scopeItems),
+      ) as Record<string, unknown>;
+    } catch (cause) {
+      return {
+        status: "error",
+        message: `Failed to evaluate sub-workflow parameters: ${String((cause as Error)?.message ?? cause)}`,
+      };
+    }
+
+    const source = parameters.source ?? "database";
+    if (source !== "database") {
+      return {
+        status: "error",
+        message: `Unsupported Execute Workflow source "${String(source)}"; mapped execution supports only the default "database" source`,
+      };
+    }
+
+    const mode = parameters.mode ?? "once";
+    if (mode !== "once") {
+      return {
+        status: "error",
+        message: `Unsupported Execute Workflow mode "${String(mode)}"; mapped execution supports only the default "once" mode`,
+      };
+    }
+
+    const executionOptions =
+      parameters.options !== null && typeof parameters.options === "object"
+        ? (parameters.options as Record<string, unknown>)
+        : {};
+    const waitsForCompletion =
+      executionOptions.waitForSubWorkflow ??
+      parameters.waitForSubWorkflowCompletion ??
+      true;
+    if (waitsForCompletion !== true) {
+      return {
+        status: "error",
+        message:
+          "Unsupported Execute Workflow asynchronous mode; mapped execution requires waitForSubWorkflow to be true",
+      };
+    }
+
+    let childInput = inputItems;
+    const rawWorkflowInputs = node.parameters.workflowInputs;
+    if (rawWorkflowInputs !== undefined) {
+      if (
+        rawWorkflowInputs === null ||
+        typeof rawWorkflowInputs !== "object" ||
+        Array.isArray(rawWorkflowInputs)
+      ) {
+        return {
+          status: "error",
+          message:
+            "Unsupported Execute Workflow workflowInputs value; expected an input-mapping object",
+        };
+      }
+      const workflowInputs = rawWorkflowInputs as Record<string, unknown>;
+      const mappingMode = workflowInputs.mappingMode ?? "defineBelow";
+      if (mappingMode !== "defineBelow") {
+        return {
+          status: "error",
+          message: `Unsupported Execute Workflow input mapping mode "${String(mappingMode)}"; mapped execution supports only "defineBelow"`,
+        };
+      }
+      if (workflowInputs.attemptToConvertTypes === true) {
+        return {
+          status: "error",
+          message:
+            "Unsupported Execute Workflow input conversion; attemptToConvertTypes must be false",
+        };
+      }
+
+      const rawValues = workflowInputs.value;
+      if (rawValues !== undefined) {
+        if (
+          rawValues === null ||
+          typeof rawValues !== "object" ||
+          Array.isArray(rawValues)
+        ) {
+          return {
+            status: "error",
+            message:
+              "Unsupported Execute Workflow workflowInputs.value; expected an object",
+          };
+        }
+
+        const stringifyFields = workflowInputs.convertFieldsToString === true;
+        const sourceItems = inputItems.length > 0 ? inputItems : toItems([{}]);
+        const mappedValues: Record<string, unknown>[] = [];
+        for (const [itemIndex, item] of sourceItems.entries()) {
+          let mapped: unknown;
+          try {
+            mapped = resolveParameterValue(
+              rawValues,
+              buildScope(item, itemIndex, sourceItems),
+            );
+          } catch (cause) {
+            return {
+              status: "error",
+              message: `Failed to evaluate workflowInputs.value for input item ${itemIndex}: ${String((cause as Error)?.message ?? cause)}`,
+            };
+          }
+          if (mapped === null || typeof mapped !== "object") {
+            return {
+              status: "error",
+              message: `workflowInputs.value resolved to a non-object for input item ${itemIndex}`,
+            };
+          }
+          const mappedRecord = mapped as Record<string, unknown>;
+          mappedValues.push(
+            stringifyFields
+              ? Object.fromEntries(
+                  Object.entries(mappedRecord).map(([key, value]) => [
+                    key,
+                    value === null || typeof value === "object"
+                      ? value
+                      : String(value),
+                  ]),
+                )
+              : mappedRecord,
+          );
+        }
+        childInput = toItems(mappedValues);
+      }
+    }
+
+    const reference = extractWorkflowReference(parameters.workflowId);
+    if (!reference) {
+      return {
+        status: "error",
+        message:
+          "Execute Workflow requires workflowId to be a non-empty string or a resource locator with a string value",
+      };
+    }
+
+    const childWorkflow = options.workflowMap?.get(reference);
+    if (!childWorkflow) {
+      return {
+        status: "error",
+        message: `Workflow reference "${reference}" is not present in the explicit workflow map`,
+      };
+    }
+
+    const referenceStack = options.subWorkflowReferenceStack ?? [];
+    if (referenceStack.includes(reference)) {
+      return {
+        status: "error",
+        message: `Sub-workflow cycle detected: ${[...referenceStack, reference].join(" -> ")}`,
+      };
+    }
+
+    const depthLimit =
+      options.subWorkflowDepthLimit ?? DEFAULT_SUB_WORKFLOW_DEPTH_LIMIT;
+    if (referenceStack.length >= depthLimit) {
+      return {
+        status: "error",
+        message: `Sub-workflow depth limit (${depthLimit}) exceeded: ${[...referenceStack, reference].join(" -> ")}`,
+      };
+    }
+
+    const triggerNodes = childWorkflow.nodes.filter(
+      (candidate) => candidate.type === EXECUTE_WORKFLOW_TRIGGER_NODE_TYPE,
+    );
+    if (triggerNodes.length !== 1) {
+      return {
+        status: "error",
+        message: `Mapped workflow "${reference}" must contain exactly one Execute Workflow Trigger; found ${triggerNodes.length}`,
+      };
+    }
+
+    const mockPrefix = `${node.name}::`;
+    const childResult = await runWorkflow(childWorkflow, {
+      initialInput: childInput,
+      hasExplicitInput: true,
+      mocks: {
+        get: (mockKey) => options.mocks.get(`${mockPrefix}${mockKey}`),
+      },
+      registry: options.registry,
+      now: options.now,
+      startNode: triggerNodes[0]?.name,
+      integrationRunner: options.integrationRunner,
+      workflowMap: options.workflowMap,
+      subWorkflowDepthLimit: depthLimit,
+      subWorkflowReferenceStack: [...referenceStack, reference],
+    });
+
+    subExecutions.push({
+      callNodeName: node.name,
+      reference,
+      workflowName: childWorkflow.name,
+      status: childResult.status,
+      traceStatusCounts: traceStatusCounts(childResult.trace),
+      pendingMockCount: childResult.pendingMocks.length,
+      errors: [...childResult.errors],
+      nested: childResult.subExecutions,
+    });
+
+    runtime.integrationEffects.push(...childResult.effects);
+
+    if (childResult.status === "needs_mock") {
+      const requests = childResult.pendingMocks.map((request) => ({
+        ...request,
+        mockKey: `${mockPrefix}${request.mockKey}`,
+        reason: `Sub-workflow "${reference}" called by "${node.name}": ${request.reason}`,
+      }));
+      const first = requests[0];
+      if (!first) {
+        return {
+          status: "error",
+          message: `Sub-workflow "${reference}" reported needs_mock without a pending mock request`,
+        };
+      }
+      return {
+        status: "waiting_mock",
+        request: first,
+        ...(requests.length > 1
+          ? { additionalRequests: requests.slice(1) }
+          : {}),
+      };
+    }
+
+    if (childResult.status !== "success") {
+      return {
+        status: "error",
+        message: `Sub-workflow "${reference}" failed: ${childResult.errors.join("; ") || childResult.status}`,
+      };
+    }
+
+    return {
+      status: "success",
+      output: terminalOutput(childWorkflow, childResult),
+    };
   }
 
   /**
@@ -429,6 +742,21 @@ export async function runWorkflow(
       return;
     }
 
+    const buildScope = (item: Item, itemIndex: number, items: Item[]) =>
+      buildExpressionScope({
+        currentItem: item,
+        itemIndex,
+        inputItems: items,
+        currentNodeName: nodeName,
+        workflowName: workflow.name,
+        workflowId: workflow.id,
+        nodeOutputs,
+        nodeSlotOutputs,
+        connections: workflow.connections,
+        now: options.now,
+        timezone: workflow.settings.timezone,
+      });
+
     let result: NodeExecuteResult;
     if (graph.loops.has(nodeName)) {
       const loopOutcome = await runLoopDriver(nodeName, node, inputItems);
@@ -459,6 +787,11 @@ export async function runWorkflow(
         return;
       }
       result = { status: "success", output: loopOutcome.output };
+    } else if (
+      node.type === EXECUTE_WORKFLOW_NODE_TYPE &&
+      options.workflowMap
+    ) {
+      result = await executeMappedSubWorkflow(node, inputItems, buildScope);
     } else {
       // Any node type s8n doesn't explicitly implement is treated as
       // unmodeled external IO and mocked the same way as HTTP Request,
@@ -467,21 +800,6 @@ export async function runWorkflow(
         type: node.type,
         execute: executeGenericFallback,
       };
-
-      const buildScope = (item: Item, itemIndex: number, items: Item[]) =>
-        buildExpressionScope({
-          currentItem: item,
-          itemIndex,
-          inputItems: items,
-          currentNodeName: nodeName,
-          workflowName: workflow.name,
-          workflowId: workflow.id,
-          nodeOutputs,
-          nodeSlotOutputs,
-          connections: workflow.connections,
-          now: options.now,
-          timezone: workflow.settings.timezone,
-        });
 
       result = await runNodeWithRetry(
         executor,
@@ -514,7 +832,7 @@ export async function runWorkflow(
       );
       propagate(nodeName, result.output);
     } else if (result.status === "waiting_mock") {
-      pendingMocks.push(result.request);
+      pendingMocks.push(result.request, ...(result.additionalRequests ?? []));
       pushRunTrace({
         nodeName,
         nodeType: node.type,
@@ -890,5 +1208,6 @@ export async function runWorkflow(
     pendingMocks,
     errors,
     effects: runtime.integrationEffects,
+    subExecutions,
   };
 }

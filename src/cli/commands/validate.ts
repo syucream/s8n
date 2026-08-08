@@ -6,28 +6,36 @@ export function registerValidateCommand(program: Command): void {
   program
     .command("validate <workflowFile>")
     .description(
-      "Validate workflow JSON schema and connection integrity without executing it",
+      "Validate workflow JSON or YAML schema and connection integrity without executing it",
     )
-    .action(async (workflowFile: string) => {
-      const loaded = await loadWorkflowFile(workflowFile);
-      if (!loaded.ok || !loaded.workflow) {
-        printEnvelope({
-          ok: false,
-          command: "validate",
-          issues: loaded.issues,
-          error: loaded.error,
+    .option(
+      "--resolve-code-includes",
+      "Resolve strict ./_subfiles/<directory>/<file>.js Code references relative to the workflow",
+    )
+    .action(
+      async (workflowFile: string, opts: { resolveCodeIncludes?: boolean }) => {
+        const loaded = await loadWorkflowFile(workflowFile, {
+          resolveCodeIncludes: opts.resolveCodeIncludes === true,
         });
-        process.exitCode = 1;
-        return;
-      }
-      printEnvelope({
-        ok: true,
-        command: "validate",
-        data: {
-          valid: true,
-          nodeCount: loaded.workflow.nodes.length,
-          nodeTypes: [...new Set(loaded.workflow.nodes.map((n) => n.type))],
-        },
-      });
-    });
+        if (!loaded.ok || !loaded.workflow) {
+          printEnvelope({
+            ok: false,
+            command: "validate",
+            issues: loaded.issues,
+            error: loaded.error,
+          });
+          process.exitCode = 1;
+          return;
+        }
+        printEnvelope({
+          ok: true,
+          command: "validate",
+          data: {
+            valid: true,
+            nodeCount: loaded.workflow.nodes.length,
+            nodeTypes: [...new Set(loaded.workflow.nodes.map((n) => n.type))],
+          },
+        });
+      },
+    );
 }

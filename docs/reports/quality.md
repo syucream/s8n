@@ -5,12 +5,47 @@ Date: 2026-08-01
 ## Release gate
 
 The release gate is `bun run quality`. It combines repository policy checks,
-Biome, TypeScript, the Bun test suite, standalone compilation, stateful Slack
-verification, and execution of a currently published community workflow.
+Biome, TypeScript, the Bun test suite, standalone compilation, the synthetic
+rehearsal, stateful service verification, five reviewed public workflows, and
+the 100-template structural corpus.
+
+## Agent rehearsal gate
+
+Date: 2026-08-07
+
+`bun run quality:rehearsal` executes an original synthetic YAML parent and
+child workflow through the standalone binary. It verifies strict Code include
+resolution, explicit mapped sub-workflow execution, mapped inputs, a scoped
+child mock, DateTime and object `keys()` expression compatibility, and host I/O
+global guardrails. The semantic result is repeated with a fixed clock.
+
+The same standalone gate also runs that workflow through an optional Scenario
+Manifest, checks output and union-coverage assertions, proves a mutated
+assertion exits non-zero, generates a synthetic-shape manifest draft from an
+n8n-shaped execution log, rejects a mismatched workflow/log pair, and verifies
+that private scalar sentinels are absent from the draft.
+
+The gate also mutates one expected behavior and one forbidden report field and
+requires both verifiers to reject the mutations. This proves the gate can turn
+red for a behavior regression and for a privacy regression. No private
+workflow, name, path, identifier, parameter, query, URL, or payload is part of
+the fixture.
+
+Detailed rehearsal reports are local developer artifacts, not repository
+documentation. Generate them only under the ignored
+`.artifacts/rehearsal/` directory:
+
+```bash
+bun run scripts/render-rehearsal-report.ts sanitized-input.json \
+  .artifacts/rehearsal/report.html
+```
+
+Do not commit generated reports. The release gate tests the renderer and its
+privacy rejection behavior without retaining its output.
 
 ## Verified results
 
-- `bun run check`: passed with 130 tests and 318 assertions.
+- `bun run check`: passed with 194 tests and 483 assertions.
 - `bun run build`: produced a standalone executable and `./dist/s8n --help`
   started without repository runtime files.
 - The compiled executable ran the Slack release example with `--emulate slack`.

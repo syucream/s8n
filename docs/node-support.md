@@ -29,6 +29,7 @@ These node types have dedicated executors:
 | Entry points | Manual Trigger, Schedule Trigger, Execute Workflow Trigger |
 | Transformations | Set, Code, Aggregate, Limit, Sort, Split Out, Date & Time, Remove Duplicates, Summarize, Time Saved |
 | Control flow | If, Filter, Switch, Merge, Loop Over Items (`splitInBatches`), NoOp, Wait, Stop and Error |
+| Local composition | Execute Workflow with an explicit `--workflow-map` |
 | Response flow | Respond to Webhook |
 | Mock-aware primitives | Webhook, HTTP Request |
 
@@ -144,10 +145,18 @@ mocks even when one of those real-world contracts would fail.
 Special cases and known gaps:
 
 - Sticky Note is a canvas annotation and is ignored as non-executable.
-- Execute Workflow does not locate or execute another workflow; mock or pin its
-  final output.
-- Code and expression evaluation are not sandboxed. Only run trusted workflow
-  JSON.
+- Execute Workflow remains a generic mock boundary unless `--workflow-map`
+  explicitly maps its reference. Mapped calls support synchronous
+  `source=database`, `mode=once` execution, mapped inputs, scoped child mocks,
+  child effects, nested evidence, cycle detection, and a depth limit. Other
+  modes fail explicitly.
+- JSON and YAML workflow files are accepted. `--resolve-code-includes`
+  opt-in resolves only `./_subfiles/<directory>/<file>.js` Code assets, checks
+  their real path remains under `_subfiles`, and rejects missing or invalid
+  targets before execution.
+- Code and expression evaluation shadow common host I/O globals to prevent
+  accidental access. This is not a hostile-code security sandbox; only run
+  trusted workflows unless the whole process is OS-isolated.
 - Nested Loop Over Items and complete `pairedItem` tracking are not modeled.
 - Emulator operations outside the documented matrix fall back to mocks.
 

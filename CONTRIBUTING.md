@@ -49,13 +49,17 @@ named `Lint`, `Build`, and `Test` as required in branch protection.
 
 ## Releases
 
-1. Update `version` in `package.json`, the CLI version in
-   `src/cli/index.ts`, and `CHANGELOG.md` in the release commit.
+1. Update `version` in `package.json` and `CHANGELOG.md` in the release pull
+   request. The CLI reads its version from `package.json`.
 2. Run `bun run quality` from a clean checkout.
-3. Create and push a `vX.Y.Z` tag matching `package.json` exactly.
-4. The release workflow re-runs `bun run quality`, builds platform-specific
-   standalone executables, creates `SHA256SUMS`, and publishes a GitHub Release.
+3. Merge the pull request into `main`. A version increase in `package.json`
+   creates the matching annotated `vX.Y.Z` tag automatically.
+4. The tag automation invokes the release workflow, which re-runs
+   `bun run quality`, builds platform-specific standalone executables, creates
+   `SHA256SUMS`, and publishes a GitHub Release.
 
-The release workflow rejects a tag whose version does not match
+The automation rejects malformed, unchanged, decreasing, or already-existing
+versions. The release workflow also rejects a tag whose version does not match
 `package.json`. Each published platform artifact is a single executable and
-does not require Bun at runtime.
+does not require Bun at runtime. Manually pushed matching tags remain supported
+for recovery.

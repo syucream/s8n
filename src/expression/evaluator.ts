@@ -1,4 +1,5 @@
 import type { ExpressionScope } from "./context.ts";
+import { SAFE_RUNTIME_GLOBALS } from "./safe-globals.ts";
 
 /**
  * s8n's expression convention (independent design, not copied from any
@@ -12,11 +13,10 @@ import type { ExpressionScope } from "./context.ts";
  * - Otherwise every `{{ ... }}` block is stringified and substituted into
  *   the surrounding literal text.
  *
- * Expressions run via `new Function`, i.e. full JS in a local, single-user
- * CLI - there is no sandboxing beyond the explicit scope passed in. This is
- * acceptable because s8n only ever evaluates workflow JSON the caller
- * supplies to their own local process; it must never be pointed at
- * untrusted, multi-tenant input.
+ * Expressions run via `new Function` in a local, single-user CLI. Common host
+ * I/O globals are shadowed to prevent accidental external access, but this is
+ * not a security sandbox for hostile JavaScript. s8n must only evaluate
+ * trusted workflow definitions unless the entire process is OS-isolated.
  */
 
 const INTERPOLATION_RE = /\{\{([\s\S]*?)\}\}/g;
@@ -38,8 +38,9 @@ export function isExpression(raw: unknown): raw is string {
 }
 
 function runJs(expr: string, scope: ExpressionScope): unknown {
-  const argNames = Object.keys(scope);
-  const argValues = Object.values(scope);
+  const guardedScope = { ...scope, ...SAFE_RUNTIME_GLOBALS };
+  const argNames = Object.keys(guardedScope);
+  const argValues = Object.values(guardedScope);
   try {
     // n8n adds helpers to primitive values. Keep the common JSON helper local
     // to expression evaluation instead of mutating global prototypes.
@@ -49,6 +50,10 @@ function runJs(expr: string, scope: ExpressionScope): unknown {
       .replace(
         /((?:\$json|\$node(?:\[[^\]]+\])?)(?:\??\.[A-Za-z_$][\w$]*|\[[^\]]+\])+?)\.parseJson\(\)/g,
         "JSON.parse($1)",
+      )
+      .replace(
+        /(\$json(?:\??\.[A-Za-z_$][\w$]*|\[[^\]]+\])*)\.keys\(\)/g,
+        "Object.keys($1)",
       )
       .replace(/(\$now|\$today)\.format\(/g, "$1.toFormat(");
     const fn = new Function(
