@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+## 0.6.0 - 2026-08-09
+
+- Load workflow JSON or YAML, with opt-in traversal-safe Code asset includes.
+- Execute explicitly mapped synchronous sub-workflows with scoped mocks and
+  nested execution evidence.
+- Add optional Scenario Manifest sidecars with deterministic assertions,
+  per-case evidence, and union executed-node coverage.
+- Generate review-required synthetic-shape scenario drafts from n8n-shaped
+  execution logs without retaining source scalar values.
+- Add a reusable agent rehearsal skill, public examples, and behavior/privacy
+  mutation checks to the release quality gate.
+
 ## 0.5.0 - 2026-08-06
 
 - Add fixture-driven AI Agent and Chain contract emulation across connected

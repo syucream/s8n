@@ -1,18 +1,20 @@
+import { SAFE_RUNTIME_GLOBALS } from "../../expression/safe-globals.ts";
 import type { Item } from "../../schema/item.ts";
 import type { NodeExecutor } from "../types.ts";
 
 /**
  * Code: runs caller-supplied JavaScript as the sole "compute" node type.
- * Like the expression evaluator, this uses `new Function` with no sandboxing
- * beyond the explicit scope passed in - acceptable for a local, single-user
- * CLI evaluating its own workflow JSON (see expression/evaluator.ts docstring).
- * No network/filesystem globals are injected, which is how s8n keeps this
- * node's IO "mocked": it simply has none available.
+ * Like the expression evaluator, this uses `new Function` for a local,
+ * single-user CLI evaluating its own trusted workflow definition. Common host
+ * I/O globals are explicitly shadowed, which prevents accidental network or
+ * filesystem access. This guardrail is not a security sandbox for hostile
+ * JavaScript; use OS-level isolation for untrusted workflows.
  */
 
 function runCode(code: string, scope: Record<string, unknown>): unknown {
-  const names = Object.keys(scope);
-  const values = Object.values(scope);
+  const guardedScope = { ...scope, ...SAFE_RUNTIME_GLOBALS };
+  const names = Object.keys(guardedScope);
+  const values = Object.values(guardedScope);
   const fn = new Function(...names, `"use strict";\n${code}\n`);
   return fn(...values);
 }

@@ -24,7 +24,12 @@ export interface PendingMockRequest {
 export type NodeExecuteResult =
   | { status: "success"; output: Item[][] }
   | { status: "error"; message: string }
-  | { status: "waiting_mock"; request: PendingMockRequest };
+  | {
+      status: "waiting_mock";
+      request: PendingMockRequest;
+      /** Additional requests surfaced by one recursively executed sub-workflow. */
+      additionalRequests?: PendingMockRequest[];
+    };
 
 export interface MockLookup {
   /** Looks up mock data registered under `mockKey`; undefined if absent. */

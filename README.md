@@ -5,7 +5,7 @@
 [![Test](https://github.com/syucream/s8n/actions/workflows/test.yml/badge.svg)](https://github.com/syucream/s8n/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-Run and inspect n8n workflow JSON locally, without starting n8n or contacting
+Run and inspect n8n workflow JSON or YAML locally, without starting n8n or contacting
 external services.
 
 s8n is useful when you want to understand a workflow, test its branching and
@@ -70,11 +70,31 @@ result includes the resolved request, emulator response, independent
 
 ## Run your own workflow
 
-Export a workflow as JSON from n8n, then run:
+Export a workflow as JSON or YAML from n8n, then run:
 
 ```bash
 ./dist/s8n validate path/to/workflow.json
 ./dist/s8n run path/to/workflow.json
+```
+
+Repositories that split trusted Code nodes into YAML `!include` assets can
+enable the strict `_subfiles` resolver explicitly:
+
+```bash
+./dist/s8n run path/to/workflow.yaml --resolve-code-includes
+```
+
+To execute called workflows locally, provide an explicit JSON or YAML map.
+s8n never scans a directory or guesses a workflow reference:
+
+```yaml
+workflows:
+  - reference: child-workflow
+    path: ./child.workflow.yaml
+```
+
+```bash
+./dist/s8n run parent.workflow.yaml --workflow-map workflow-map.yaml
 ```
 
 If an external node needs data, the run returns `needs_mock` and tells you the
@@ -106,6 +126,7 @@ to be easy for both people and external AI agents to follow.
 | HTTP Request and app integrations | Requests caller-provided mock output by default |
 | Supported service operations | Can use opt-in stateful emulation |
 | Existing n8n pinned data | Uses `pinData` directly |
+| Explicitly mapped called workflows | Executes them recursively and reports child evidence |
 | Unknown executable node types | Uses the generic mock fallback |
 
 Built-in behavior includes triggers, Set, If, Filter, Switch, Merge, Code,
@@ -126,6 +147,9 @@ Google Cloud, Notion, Jira, and GitHub operations. See:
 
 ```text
 s8n run <workflowFile> [options]  Simulate a workflow
+s8n rehearse <workflow> <manifest> Run optional repeatable scenarios
+s8n scenario validate <manifest>   Validate a scenario sidecar
+s8n scenario draft <workflow> <execution> Create a synthetic draft
 s8n validate <workflowFile>       Validate schema and connections
 s8n schema [nodeType]             Inspect node parameters and mock requirements
 s8n init [--out file]             Create a minimal sample workflow
@@ -135,6 +159,8 @@ Useful `run` options:
 
 - `--input <file>` supplies initial trigger items.
 - `--mocks <file>` supplies synthetic external-node responses.
+- `--workflow-map <file>` explicitly maps called workflow references.
+- `--resolve-code-includes` resolves strict, workflow-local `_subfiles` Code assets.
 - `--emulate <services|all>` enables selected in-memory service emulators.
 - `--emulator-seed <file>` supplies initial emulator state.
 - `--now <ISO timestamp>` makes time-dependent expressions reproducible.
@@ -145,16 +171,23 @@ Useful `run` options:
 Run `./dist/s8n --help` or `./dist/s8n run --help` for the complete CLI help.
 Every command writes exactly one machine-readable JSON envelope to stdout.
 
+Scenario manifests are optional: the workflow file remains canonical and the
+existing `run` command never discovers a sidecar implicitly. See
+[Scenario rehearsal](docs/scenario-rehearsal.md) for multi-case assertions,
+union coverage, safe execution-log drafts, and the external-agent loop.
+
 ## Safety and limitations
 
 - Workflow credentials are descriptive only and are never used.
 - External I/O is always mocked or emulated in-process.
-- Expression evaluation and Code nodes use `new Function` and are not
-  sandboxed. Only run workflow JSON you trust.
+- Expression evaluation and Code nodes use `new Function`. Common host I/O
+  globals are shadowed, but this is not a hostile-code sandbox. Only run
+  trusted workflows unless the whole process is OS-isolated.
 - Emulation does not reproduce authentication, authorization, rate limits,
   pagination, webhooks, arbitrary BigQuery SQL, real model semantics, or AI
   output quality.
-- Execute Workflow does not resolve a real sub-workflow.
+- Execute Workflow supports only the synchronous, once-per-run subset when an
+  explicit map is supplied; other modes fail explicitly.
 - Code-node static data lasts for one execution only.
 - Nested Loop Over Items flows and complete cross-iteration `pairedItem`
   tracking are not supported.
@@ -172,8 +205,9 @@ bun run quality  # complete release gate
 ```
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) for development and release guidance.
-AI coding agents should start with [AGENTS.md](AGENTS.md). Detailed retained
-quality evidence is under [docs/reports](docs/reports/).
+AI coding agents should start with [AGENTS.md](AGENTS.md). Stable quality
+documentation is under [docs/reports](docs/reports/). Generated rehearsal
+reports are local developer artifacts under `.artifacts/` and are not tracked.
 
 ## License
 

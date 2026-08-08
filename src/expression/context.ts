@@ -24,6 +24,8 @@ export function createAccessor(
 }
 
 export interface ExpressionScope {
+  /** Luxon namespace exposed by n8n expressions for explicit parsing and construction. */
+  DateTime: typeof DateTime;
   $json: Record<string, unknown>;
   $binary: Record<string, unknown> | undefined;
   $itemIndex: number;
@@ -125,6 +127,7 @@ export function buildExpressionScope(
     },
   );
   return {
+    DateTime,
     $json: options.currentItem.json,
     $binary: options.currentItem.binary,
     $itemIndex: options.itemIndex,

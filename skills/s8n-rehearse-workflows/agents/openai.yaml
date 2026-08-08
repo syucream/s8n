@@ -1,0 +1,4 @@
+interface:
+  display_name: "Rehearse n8n Workflows"
+  short_description: "Build safe, reproducible s8n rehearsal scenarios"
+  default_prompt: "Use $s8n-rehearse-workflows to turn this workflow into safe, reproducible rehearsal scenarios."

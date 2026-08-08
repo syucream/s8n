@@ -30,6 +30,40 @@ function node(parameters: Record<string, unknown>) {
 }
 
 describe("codeExecutor", () => {
+  test("does not expose host I/O globals", async () => {
+    const inputItems = toItems([{}]);
+    const result = await codeExecutor.execute({
+      node: node({
+        jsCode:
+          "return [{ json: { types: [typeof fetch, typeof process, typeof Bun, typeof require, typeof globalThis.fetch] } }];",
+      }),
+      inputItems,
+      inputSlots: [inputItems],
+      runtime: runtimeFor(),
+      isStartNode: false,
+      buildScope: (item, itemIndex, items) =>
+        buildExpressionScope({
+          currentItem: item,
+          itemIndex,
+          inputItems: items,
+          currentNodeName: "Code",
+          workflowName: "t",
+          nodeOutputs: new Map(),
+        }),
+    });
+
+    expect(result.status).toBe("success");
+    if (result.status === "success") {
+      expect(result.output[0]?.[0]?.json.types).toEqual([
+        "undefined",
+        "undefined",
+        "undefined",
+        "undefined",
+        "undefined",
+      ]);
+    }
+  });
+
   test("runOnceForAllItems maps over `items` and returns a new array", async () => {
     const inputItems = toItems([{ n: 1 }, { n: 2 }]);
     const result = await codeExecutor.execute({

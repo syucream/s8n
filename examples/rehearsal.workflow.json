@@ -1,0 +1,40 @@
+{
+  "name": "rehearsal-example",
+  "nodes": [
+    {
+      "name": "Start",
+      "type": "n8n-nodes-base.manualTrigger",
+      "parameters": {}
+    },
+    {
+      "name": "Choose Tier",
+      "type": "n8n-nodes-base.if",
+      "parameters": { "condition": "={{ $json.amount > 100 }}" }
+    },
+    {
+      "name": "High Tier",
+      "type": "n8n-nodes-base.set",
+      "parameters": {
+        "fields": [{ "name": "tier", "value": "high" }]
+      }
+    },
+    {
+      "name": "Standard Tier",
+      "type": "n8n-nodes-base.set",
+      "parameters": {
+        "fields": [{ "name": "tier", "value": "standard" }]
+      }
+    }
+  ],
+  "connections": {
+    "Start": {
+      "main": [[{ "node": "Choose Tier", "type": "main", "index": 0 }]]
+    },
+    "Choose Tier": {
+      "main": [
+        [{ "node": "High Tier", "type": "main", "index": 0 }],
+        [{ "node": "Standard Tier", "type": "main", "index": 0 }]
+      ]
+    }
+  }
+}
