@@ -4,6 +4,12 @@ on:
   push:
     tags:
       - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      release_tag:
+        description: Existing package release tag
+        required: true
+        type: string
   workflow_call:
     inputs:
       release_tag:
@@ -12,7 +18,7 @@ on:
         type: string
 
 env:
-  RELEASE_TAG: ${{ github.event_name == 'workflow_call' && inputs.release_tag || github.ref_name }}
+  RELEASE_TAG: ${{ inputs.release_tag || github.ref_name }}
 
 permissions:
   contents: read
