@@ -1,6 +1,6 @@
 {
   "name": "s8n",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "packageManager": "bun@1.3.4",
   "module": "src/cli/index.ts",
   "type": "module",
