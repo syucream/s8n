@@ -13,6 +13,23 @@ interface Envelope {
       status: string;
       traceStatusCounts: Record<string, number>;
     }>;
+    result?: Envelope["data"];
+    determinism?: { equal?: boolean; fingerprint?: string };
+    pendingMocks?: Array<{
+      nodeName?: string;
+      provenance?: Array<{ source?: string; confidence?: string }>;
+      cardinalityHint?: {
+        minItems?: number;
+        preferredItems?: number;
+        allowsMultiple?: boolean;
+      };
+    }>;
+    summary?: { total?: number; passed?: number };
+    cases?: Array<{
+      passed?: boolean;
+      runStatus?: string;
+      pendingMocks?: unknown[];
+    }>;
   };
 }
 
@@ -62,11 +79,12 @@ async function run(binary: string, args: string[]): Promise<Envelope> {
 }
 
 function verifyResult(envelope: Envelope, expectedKeyCount: number): boolean {
-  const output = envelope.data?.nodeOutputs?.["Call Child"]?.[0]?.json;
-  const child = envelope.data?.subExecutions?.[0];
+  const data = envelope.data?.result ?? envelope.data;
+  const output = data?.nodeOutputs?.["Call Child"]?.[0]?.json;
+  const child = data?.subExecutions?.[0];
   return (
     envelope.ok === true &&
-    envelope.data?.status === "success" &&
+    data?.status === "success" &&
     output?.keyCount === expectedKeyCount &&
     output?.date === "2026-08-01" &&
     output?.remote === "synthetic" &&
@@ -88,6 +106,13 @@ try {
   const mocksPath = join(directory, "mocks.json");
   const scenarioPath = join(directory, "scenarios.yaml");
   const mutatedScenarioPath = join(directory, "mutated-scenarios.yaml");
+  const edgeMutationPath = join(directory, "edge-mutation.yaml");
+  const cardinalityMutationPath = join(directory, "cardinality-mutation.yaml");
+  const lineageMutationPath = join(directory, "lineage-mutation.yaml");
+  const faultWorkflowPath = join(directory, "fault.yaml");
+  const faultScenarioPath = join(directory, "fault-scenarios.yaml");
+  const mockContractPath = join(directory, "mock-contract.yaml");
+  const nondeterministicPath = join(directory, "nondeterministic.yaml");
   const executionPath = join(directory, "execution.json");
   const mismatchedExecutionPath = join(directory, "mismatched-execution.json");
 
@@ -196,9 +221,21 @@ cases:
   - name: mapped-child
     assertions:
       minimumCoverage: 1
+      minimumBranchCoverage: 1
       requiredNodes: [Call Child]
+      requiredEdges:
+        - sourceNode: Trigger
+          sourceOutput: 0
+          destinationNode: Call Child
+          destinationInput: 0
       pendingMockCount: 0
       subExecutionCount: 1
+      nodeOutputCardinality:
+        - node: Call Child
+          exact: 1
+      nodeOutputLineage:
+        - node: Call Child
+          lineageContains: [input:0]
       nodeOutputs:
         - node: Call Child
           pointer: /json/keyCount
@@ -214,6 +251,108 @@ cases:
   await Bun.write(
     mutatedScenarioPath,
     scenarioSource.replace("EXPECTED_KEY_COUNT", "99"),
+  );
+  await Bun.write(
+    edgeMutationPath,
+    scenarioSource
+      .replace("EXPECTED_KEY_COUNT", "2")
+      .replace("requiredEdges:", "forbiddenEdges:"),
+  );
+  await Bun.write(
+    cardinalityMutationPath,
+    scenarioSource
+      .replace("EXPECTED_KEY_COUNT", "2")
+      .replace("          exact: 1", "          exact: 2"),
+  );
+  await Bun.write(
+    lineageMutationPath,
+    scenarioSource
+      .replace("EXPECTED_KEY_COUNT", "2")
+      .replace("lineageContains: [input:0]", "lineageContains: [input:99]"),
+  );
+  await Bun.write(
+    faultWorkflowPath,
+    `name: Synthetic fault boundary
+nodes:
+  - name: Trigger
+    type: n8n-nodes-base.manualTrigger
+  - name: Request
+    type: n8n-nodes-base.httpRequest
+    parameters:
+      url: https://example.invalid/fault
+connections:
+  Trigger:
+    main:
+      - - node: Request
+          type: main
+          index: 0
+settings: {}
+`,
+  );
+  await Bun.write(
+    faultScenarioPath,
+    `version: 1
+cases:
+  - name: deterministic-timeout
+    faults:
+      - node: Request
+        kind: timeout
+    assertions:
+      status: error
+      minimumCoverage: 1
+      requiredNodes: [Request]
+      pendingMockCount: 0
+`,
+  );
+  await Bun.write(
+    mockContractPath,
+    `name: Synthetic mock contract
+nodes:
+  - name: Trigger
+    type: n8n-nodes-base.manualTrigger
+  - name: Fetch Account
+    type: n8n-nodes-base.httpRequest
+    parameters:
+      method: GET
+      url: https://example.invalid/account
+  - name: Use Account
+    type: n8n-nodes-base.set
+    parameters:
+      fields:
+        - name: account
+          value: "={{ $json.accountId }}"
+connections:
+  Trigger:
+    main:
+      - - node: Fetch Account
+          type: main
+          index: 0
+  Fetch Account:
+    main:
+      - - node: Use Account
+          type: main
+          index: 0
+settings: {}
+`,
+  );
+  await Bun.write(
+    nondeterministicPath,
+    `name: Synthetic nondeterminism
+nodes:
+  - name: Trigger
+    type: n8n-nodes-base.manualTrigger
+  - name: Random
+    type: n8n-nodes-base.code
+    parameters:
+      jsCode: "return [{ json: { value: Math.random() } }];"
+connections:
+  Trigger:
+    main:
+      - - node: Random
+          type: main
+          index: 0
+settings: {}
+`,
   );
   await writeJson(executionPath, {
     status: "success",
@@ -267,13 +406,57 @@ cases:
     "--now",
     "2026-08-01T00:00:00.000Z",
   ];
-  const first = await run(binary, args);
+  const first = await run(binary, [...args, "--code-mode", "auto"]);
   const second = await run(binary, args);
   assert(verifyResult(first, 2), "Synthetic mapped workflow evidence failed");
   assert(verifyResult(second, 2), "Repeated rehearsal evidence failed");
   assert(
     !verifyResult(first, 99),
     "The rehearsal verifier did not reject a mutated expectation",
+  );
+  const deterministic = await run(binary, [
+    ...args,
+    "--code-mode",
+    "auto",
+    "--determinism-check",
+  ]);
+  assert(
+    deterministic.data?.determinism?.equal === true &&
+      typeof deterministic.data.determinism.fingerprint === "string" &&
+      deterministic.data.determinism.fingerprint.length === 64 &&
+      verifyResult(deterministic, 2),
+    "Stable workflow determinism evidence failed",
+  );
+  const nondeterministic = await runAllowFailure(binary, [
+    "run",
+    nondeterministicPath,
+    "--determinism-check",
+  ]);
+  assert(
+    nondeterministic.exitCode === 1 &&
+      nondeterministic.envelope.ok === false &&
+      nondeterministic.envelope.data?.determinism?.equal === false,
+    "Observable nondeterminism was not rejected",
+  );
+
+  const mockContract = await run(binary, ["run", mockContractPath]);
+  const pendingMock = mockContract.data?.pendingMocks?.[0];
+  const provenance = pendingMock?.provenance ?? [];
+  assert(
+    mockContract.data?.status === "needs_mock" &&
+      pendingMock?.nodeName === "Fetch Account" &&
+      provenance.some(
+        (entry) =>
+          entry.source === "downstream-expression" &&
+          entry.confidence === "high",
+      ) &&
+      provenance.some(
+        (entry) => entry.source === "user" && entry.confidence === "high",
+      ) &&
+      pendingMock.cardinalityHint?.minItems === 1 &&
+      pendingMock.cardinalityHint.preferredItems === 1 &&
+      pendingMock.cardinalityHint.allowsMultiple === true,
+    "Pending mock contract evidence was incomplete",
   );
 
   const manifestRun = await run(binary, ["rehearse", rootPath, scenarioPath]);
@@ -295,6 +478,30 @@ cases:
   assert(
     mutatedManifest.exitCode === 1 && mutatedManifest.envelope.ok === false,
     "Scenario assertion mutation did not fail",
+  );
+  for (const [mutation, path] of [
+    ["covered edge became forbidden", edgeMutationPath],
+    ["output cardinality changed", cardinalityMutationPath],
+    ["output lineage changed", lineageMutationPath],
+  ] as const) {
+    const result = await runAllowFailure(binary, ["rehearse", rootPath, path]);
+    assert(
+      result.exitCode === 1 && result.envelope.ok === false,
+      `Scenario mutation was not rejected: ${mutation}`,
+    );
+  }
+  const faultManifest = await run(binary, [
+    "rehearse",
+    faultWorkflowPath,
+    faultScenarioPath,
+  ]);
+  assert(
+    faultManifest.data?.summary?.total === 1 &&
+      faultManifest.data.summary.passed === 1 &&
+      faultManifest.data.cases?.[0]?.passed === true &&
+      faultManifest.data.cases[0].runStatus === "error" &&
+      faultManifest.data.cases[0].pendingMocks?.length === 0,
+    "Deterministic external-I/O fault rehearsal failed",
   );
 
   const importedDraft = await run(binary, [
@@ -354,6 +561,16 @@ cases:
           dateTimeAndKeysHelpersMatched: true,
           hostIoGlobalsGuarded: true,
           deterministicSemanticResult: true,
+          stableFingerprintVerified: true,
+          observableNondeterminismRejected: true,
+          codeAutoBoundaryVerified: true,
+          branchAndEdgeEvidenceVerified: true,
+          edgeMutationRejected: true,
+          cardinalityAndLineageVerified: true,
+          cardinalityMutationRejected: true,
+          lineageMutationRejected: true,
+          faultInjectionVerified: true,
+          mockContractEvidenceVerified: true,
           behaviorMutationRejected: true,
           privacyMutationRejected: true,
           optionalScenarioManifestVerified: true,
