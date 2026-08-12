@@ -55,6 +55,28 @@ async function branchingWorkflow(): Promise<string> {
   return workflowPath;
 }
 
+async function externalWorkflow(type: string): Promise<string> {
+  const directory = await mkdtemp(join(tmpdir(), "s8n-rehearsal-fault-"));
+  directories.push(directory);
+  const workflowPath = join(directory, "workflow.json");
+  await Bun.write(
+    workflowPath,
+    JSON.stringify({
+      name: "Fault rehearsal",
+      nodes: [
+        { name: "Start", type: "n8n-nodes-base.manualTrigger" },
+        { name: "Boundary", type },
+      ],
+      connections: {
+        Start: {
+          main: [[{ node: "Boundary", type: "main", index: 0 }]],
+        },
+      },
+    }),
+  );
+  return workflowPath;
+}
+
 describe("runRehearsal", () => {
   test("runs independent cases and reports union executed coverage", async () => {
     const manifest: ResolvedScenarioManifest = {
@@ -127,7 +149,7 @@ describe("runRehearsal", () => {
     });
   });
 
-  test("treats unknown assertion nodes as configuration errors", async () => {
+  test("treats unknown assertion nodes and edge endpoints as configuration errors", async () => {
     const result = await runRehearsal({
       workflowFile: await branchingWorkflow(),
       manifest: {
@@ -136,12 +158,120 @@ describe("runRehearsal", () => {
           {
             name: "invalid",
             run: { input: { enabled: true } },
-            assertions: { forbiddenNodes: ["Typo"] },
+            assertions: {
+              forbiddenNodes: ["Typo"],
+              requiredEdges: [
+                {
+                  sourceNode: "Start",
+                  sourceOutput: 0,
+                  destinationNode: "Missing",
+                  destinationInput: 0,
+                },
+              ],
+            },
           },
         ],
       },
     });
-    expect(result.cases[0]?.configurationErrors[0]).toContain("unknown");
+    expect(result.cases[0]?.configurationErrors).toEqual([
+      "Assertion references an unknown workflow node: Typo",
+      "Assertion references an unknown workflow node: Missing",
+    ]);
     expect(result.cases[0]?.passed).toBe(false);
+  });
+
+  test("rejects faults on local compute nodes as configuration errors", async () => {
+    const result = await runRehearsal({
+      workflowFile: await branchingWorkflow(),
+      manifest: {
+        version: 1,
+        cases: [
+          {
+            name: "invalid target",
+            faults: [{ node: "Choose", kind: "timeout" }],
+            run: { input: { enabled: true } },
+          },
+        ],
+      },
+    });
+
+    expect(result.cases[0]?.configurationErrors).toEqual([
+      "Fault target must be an HTTP Request or generic external node: Choose",
+    ]);
+    expect(result.cases[0]?.passed).toBe(false);
+  });
+
+  test("injects HTTP failures before a supplied mock without real I/O", async () => {
+    const result = await runRehearsal({
+      workflowFile: await externalWorkflow("n8n-nodes-base.httpRequest"),
+      manifest: {
+        version: 1,
+        cases: [
+          {
+            name: "service unavailable",
+            faults: [{ node: "Boundary", kind: "http-error", statusCode: 503 }],
+            run: { mocks: { Boundary: { response: "would not be used" } } },
+            assertions: { status: "error" },
+          },
+        ],
+      },
+    });
+
+    expect(result.cases[0]).toMatchObject({
+      passed: true,
+      runStatus: "error",
+      errors: [expect.stringContaining("Injected HTTP error 503")],
+      trace: [
+        expect.objectContaining({ node: "Start", status: "success" }),
+        expect.objectContaining({ node: "Boundary", status: "error" }),
+      ],
+    });
+  });
+
+  test("represents a timeout without waiting for wall-clock time", async () => {
+    const result = await runRehearsal({
+      workflowFile: await externalWorkflow("n8n-nodes-base.httpRequest"),
+      manifest: {
+        version: 1,
+        cases: [
+          {
+            name: "timed out",
+            faults: [{ node: "Boundary", kind: "timeout" }],
+            run: {},
+            assertions: { status: "error" },
+          },
+        ],
+      },
+    });
+
+    expect(result.cases[0]).toMatchObject({
+      passed: true,
+      runStatus: "error",
+      errors: [expect.stringContaining("Injected timeout fault")],
+      pendingMocks: [],
+    });
+  });
+
+  test("injects malformed JSON at a generic mock boundary", async () => {
+    const result = await runRehearsal({
+      workflowFile: await externalWorkflow("n8n-nodes-base.slack"),
+      manifest: {
+        version: 1,
+        cases: [
+          {
+            name: "bad generic response",
+            faults: [{ node: "Boundary", kind: "malformed-json" }],
+            run: { mocks: { Boundary: { ok: true } } },
+            assertions: { status: "error" },
+          },
+        ],
+      },
+    });
+
+    expect(result.cases[0]).toMatchObject({
+      passed: true,
+      runStatus: "error",
+      errors: [expect.stringContaining("Injected malformed JSON")],
+    });
   });
 });

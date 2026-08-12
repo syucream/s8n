@@ -1,5 +1,6 @@
 import { buildExpressionScope } from "../expression/context.ts";
 import { resolveParameterValue } from "../expression/evaluator.ts";
+import type { FaultLookup } from "../faults.ts";
 import type {
   IntegrationEffect,
   IntegrationRunner,
@@ -24,6 +25,8 @@ export interface RunOptions {
   initialInput?: Item[];
   hasExplicitInput: boolean;
   mocks: MockLookup;
+  /** Optional deterministic failures applied by HTTP and generic mock nodes. */
+  faults?: FaultLookup;
   registry: NodeRegistry;
   now?: Date;
   /**
@@ -44,6 +47,10 @@ export interface RunOptions {
   subWorkflowDepthLimit?: number;
   /** Internal reference chain used to detect cycles across recursive runs. */
   subWorkflowReferenceStack?: string[];
+  /** Optional Code-node execution boundary. */
+  codeExecutionMode?: "in-process" | "vm" | "os" | "auto";
+  /** Timeout used by vm Code execution. Defaults to 1000ms. */
+  codeTimeoutMs?: number;
 }
 
 export type NodeTraceStatus =
@@ -101,6 +108,28 @@ export interface NodeTraceEntry {
   }>;
   /** Exact per-output-slot items produced by this run. */
   data?: { main: Item[][] };
+  /** Origin IDs for the input items observed by this node, in slot order. */
+  inputItemLineage?: string[][];
+  /** Origin IDs for the output items produced by this node, in slot order. */
+  outputItemLineage?: string[][];
+}
+
+/**
+ * Observed delivery statistics for one main-pipeline connection.
+ *
+ * `deliveryCount` records every attempted delivery, including empty output
+ * slots. An edge is covered when at least one item crossed it, which makes
+ * branch coverage useful for proving that a path carried data while still
+ * retaining empty-branch observations in the detailed counters.
+ */
+export interface EdgeCoverageEntry {
+  sourceNode: string;
+  sourceOutput: number;
+  destinationNode: string;
+  destinationInput: number;
+  deliveryCount: number;
+  itemCount: number;
+  covered: boolean;
 }
 
 /**
@@ -144,6 +173,10 @@ export interface RunResult {
   effects: IntegrationEffect[];
   /** AI-readable evidence for explicitly mapped child workflow executions. */
   subExecutions: SubExecutionSummary[];
+  /** Main-pipeline connection deliveries observed during this run. */
+  edgeCoverage: EdgeCoverageEntry[];
+  /** Fraction of main-pipeline edges that received at least one delivery. */
+  branchCoverage: number;
   /** Populated only when status is "needs_start_node": pass one of these names via `startNode`. */
   startNodeCandidates?: StartNodeCandidate[];
 }
@@ -224,6 +257,12 @@ export async function runWorkflow(
   const graph = analyzeGraph(workflow);
   const nodesByName = new Map(workflow.nodes.map((n) => [n.name, n]));
   const suggestedFields = extractReferencedJsonFields(workflow);
+  const suggestedFieldsByNode = new Map(
+    workflow.nodes.map((node) => [
+      node.name,
+      extractReferencedJsonFields(workflow, node.name),
+    ]),
+  );
 
   const pendingData = new Map<string, Item[][]>();
   const filledSlots = new Map<string, Set<number>>();
@@ -233,11 +272,37 @@ export async function runWorkflow(
   >();
   const nodeOutputs = new Map<string, Item[]>();
   const nodeSlotOutputs = new Map<string, Item[][]>();
+  /** Internal provenance is kept out of Item JSON and exposed only in trace. */
+  const itemLineage = new WeakMap<object, string[]>();
   const trace: NodeTraceEntry[] = [];
   let executionIndex = 0;
   const pendingMocks: PendingMockRequest[] = [];
   const errors: string[] = [];
   const subExecutions: SubExecutionSummary[] = [];
+  const edgeCoverage = new Map<string, EdgeCoverageEntry>();
+  for (const [sourceNode, connectionTypes] of Object.entries(
+    workflow.connections,
+  )) {
+    for (const [sourceOutput, destinations] of (
+      connectionTypes.main ?? []
+    ).entries()) {
+      for (const destination of destinations) {
+        const entry: EdgeCoverageEntry = {
+          sourceNode,
+          sourceOutput,
+          destinationNode: destination.node,
+          destinationInput: destination.index,
+          deliveryCount: 0,
+          itemCount: 0,
+          covered: false,
+        };
+        edgeCoverage.set(
+          `${sourceNode}\u0000${sourceOutput}\u0000${destination.node}\u0000${destination.index}`,
+          entry,
+        );
+      }
+    }
+  }
   for (const node of workflow.nodes) {
     const slots = graph.requiredSlots.get(node.name) ?? 1;
     pendingData.set(
@@ -289,6 +354,8 @@ export async function runWorkflow(
             : [],
       effects: [],
       subExecutions: [],
+      edgeCoverage: [...edgeCoverage.values()],
+      branchCoverage: edgeCoverage.size === 0 ? 1 : 0,
       startNodeCandidates: executableStartNodes.map((name) => ({
         name,
         type: nodesByName.get(name)?.type ?? "",
@@ -297,6 +364,9 @@ export async function runWorkflow(
   }
 
   const seedInput = options.initialInput ?? toItems([{}]);
+  seedInput.forEach((item, index) => {
+    itemLineage.set(item, [`input:${index}`]);
+  });
   const queue: string[] = [];
   if (activeStartNode) {
     pendingData.get(activeStartNode)?.splice(0, 1, seedInput);
@@ -309,12 +379,16 @@ export async function runWorkflow(
     nodeOutputs,
     now: options.now,
     mocks: options.mocks,
+    faults: options.faults,
     suggestedFields,
+    suggestedFieldsByNode,
     hasExplicitInput: options.hasExplicitInput,
     workflowStaticData: new Map(),
     integrationRunner: options.integrationRunner,
     integrationSubnodes: new Map(),
     integrationEffects: [],
+    codeExecutionMode: options.codeExecutionMode,
+    codeTimeoutMs: options.codeTimeoutMs,
   };
   const aiConnectionTypes = [
     "ai_languageModel",
@@ -378,6 +452,74 @@ export async function runWorkflow(
 
   function cloneMainData(output: Item[][]): Item[][] {
     return structuredClone(output);
+  }
+
+  function inputLineage(inputSlots: Item[][]): string[][] {
+    return inputSlots.flat().map((item) => itemLineage.get(item) ?? []);
+  }
+
+  function jsonContains(
+    candidate: Record<string, unknown>,
+    output: Record<string, unknown>,
+  ): boolean {
+    return Object.entries(candidate).every(
+      ([key, value]) => JSON.stringify(output[key]) === JSON.stringify(value),
+    );
+  }
+
+  /**
+   * Assigns provenance to executor-created items without adding internal
+   * fields to the n8n-compatible Item JSON. Existing item references retain
+   * their lineage; pairedItem is used for normal one-to-one transforms, while
+   * a cardinality reduction with no unambiguous source is conservatively
+   * attributed to every input item.
+   */
+  function outputLineage(
+    nodeName: string,
+    inputSlots: Item[][],
+    output: Item[][],
+    runIndex?: number,
+  ): string[][] {
+    const inputs = inputSlots.flat();
+    const outputs = output.flat();
+    const inputCount = inputs.length;
+    const outputCount = outputs.length;
+    return outputs.map((item, outputIndex) => {
+      const known = itemLineage.get(item);
+      if (known) return known;
+
+      const pairedIndex = item.pairedItem?.item;
+      const matchingInputs = inputs.filter((candidate) =>
+        jsonContains(candidate.json, item.json),
+      );
+      let origins = [
+        ...new Set(
+          matchingInputs.flatMap(
+            (candidate) => itemLineage.get(candidate) ?? [],
+          ),
+        ),
+      ];
+      if (origins.length === 0 && pairedIndex !== undefined) {
+        const source = inputSlots[0]?.[pairedIndex] ?? inputs[pairedIndex];
+        origins = source ? (itemLineage.get(source) ?? []) : [];
+      }
+      if (
+        matchingInputs.length === 0 &&
+        outputCount < inputCount &&
+        inputCount > 1
+      ) {
+        origins = [
+          ...new Set(
+            inputs.flatMap((candidate) => itemLineage.get(candidate) ?? []),
+          ),
+        ];
+      }
+      if (origins.length === 0) {
+        origins = [`generated:${nodeName}:${runIndex ?? 0}:${outputIndex}`];
+      }
+      itemLineage.set(item, origins);
+      return origins;
+    });
   }
 
   async function executeMappedSubWorkflow(
@@ -657,6 +799,9 @@ export async function runWorkflow(
             : entry.status === "waiting_mock"
               ? "waiting"
               : "skipped";
+      const outputItemLineage = output
+        ? outputLineage(nodeName, inputSlots, output, runIndex)
+        : undefined;
       trace.push({
         ...entry,
         startTime,
@@ -667,6 +812,8 @@ export async function runWorkflow(
         executionIndex: executionIndex++,
         executionStatus,
         source: sourcesForNode(nodeName),
+        inputItemLineage: inputLineage(inputSlots),
+        ...(outputItemLineage === undefined ? {} : { outputItemLineage }),
         ...(output ? { data: { main: cloneMainData(output) } } : {}),
       });
     };
@@ -1125,6 +1272,14 @@ export async function runWorkflow(
     const mainConnections = workflow.connections[sourceName]?.main ?? [];
     const destinations = mainConnections[outputIndex] ?? [];
     for (const destination of destinations) {
+      const coverage = edgeCoverage.get(
+        `${sourceName}\u0000${outputIndex}\u0000${destination.node}\u0000${destination.index}`,
+      );
+      if (coverage) {
+        coverage.deliveryCount += 1;
+        coverage.itemCount += items.length;
+        coverage.covered = coverage.itemCount > 0;
+      }
       const destSlots = pendingData.get(destination.node);
       if (!destSlots) continue;
       destSlots[destination.index] = [
@@ -1209,5 +1364,11 @@ export async function runWorkflow(
     errors,
     effects: runtime.integrationEffects,
     subExecutions,
+    edgeCoverage: [...edgeCoverage.values()],
+    branchCoverage:
+      edgeCoverage.size === 0
+        ? 1
+        : [...edgeCoverage.values()].filter((edge) => edge.covered).length /
+          edgeCoverage.size,
   };
 }

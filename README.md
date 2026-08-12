@@ -47,6 +47,10 @@ each node under `data.nodeOutputs`:
 }
 ```
 
+The same result includes execution trace evidence: main-edge delivery counts,
+branch coverage, and per-item lineage for local cardinality debugging. These
+are simulator observations; they do not identify real external records.
+
 During development, you can skip the build and run the TypeScript entry point:
 
 ```bash
@@ -167,6 +171,12 @@ Useful `run` options:
 - `--start-node <name>` chooses one of multiple possible entry points.
 - `--execution-log` adds an n8n-shaped `resultData.runData` record.
 - `--truncate-data <count>` bounds retained execution-log items.
+- `--code-mode vm` runs Code nodes in a fresh Node VM context with a bounded
+  timeout; `--code-mode os` uses `sandbox-exec` on macOS or `bwrap` on Linux
+  when installed; `--code-mode auto` prefers that OS sandbox and falls back to
+  `vm`. `--code-timeout-ms` changes the limit.
+- `--determinism-check` runs the same input twice and reports whether the
+  stable execution evidence matches (wall-clock timing is excluded).
 
 Run `./dist/s8n --help` or `./dist/s8n run --help` for the complete CLI help.
 Every command writes exactly one machine-readable JSON envelope to stdout.
@@ -180,9 +190,14 @@ union coverage, safe execution-log drafts, and the external-agent loop.
 
 - Workflow credentials are descriptive only and are never used.
 - External I/O is always mocked or emulated in-process.
-- Expression evaluation and Code nodes use `new Function`. Common host I/O
-  globals are shadowed, but this is not a hostile-code sandbox. Only run
-  trusted workflows unless the whole process is OS-isolated.
+- Expression evaluation and in-process Code nodes use `new Function`. Common
+  host I/O globals are shadowed, but this is not a hostile-code sandbox. The
+  optional `vm` Code mode adds a fresh context and execution timeout. The
+  `os`/`auto` modes run Code in a child process and, when available, apply the
+  platform sandbox. The sandbox command and policy are environment-dependent;
+  they block network access and host writes, and sanitize inherited environment
+  variables, but may retain read-only access needed by the runtime. Treat this
+  as a stronger guardrail, not a universal confidentiality boundary.
 - Emulation does not reproduce authentication, authorization, rate limits,
   pagination, webhooks, arbitrary BigQuery SQL, real model semantics, or AI
   output quality.

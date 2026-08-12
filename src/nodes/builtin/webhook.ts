@@ -1,4 +1,8 @@
 import { normalizeMockToItems } from "../../mock/normalize.ts";
+import {
+  buildMockContractEvidence,
+  defaultMockCardinalityHint,
+} from "../../mock/request-contract.ts";
 import { buildMockShapeHint } from "../../mock/shape-hint.ts";
 import type { NodeExecutor } from "../types.ts";
 
@@ -24,6 +28,8 @@ export const webhookExecutor: NodeExecutor = {
       };
     }
 
+    const suggestedFields =
+      runtime.suggestedFieldsByNode?.get(node.name) ?? runtime.suggestedFields;
     return {
       status: "waiting_mock",
       request: {
@@ -33,8 +39,14 @@ export const webhookExecutor: NodeExecutor = {
         reason: `No incoming request body was provided for webhook "${node.name}"`,
         expectedShape: buildMockShapeHint(
           "The JSON request body received by this webhook. Use field names referenced by the workflow as a guide.",
-          runtime.suggestedFields,
+          suggestedFields,
         ),
+        provenance: buildMockContractEvidence({
+          suggestedFields,
+          genericContext:
+            "No concrete incoming payload was supplied, so the webhook body shape is inferred generically.",
+        }),
+        cardinalityHint: { ...defaultMockCardinalityHint },
       },
     };
   },

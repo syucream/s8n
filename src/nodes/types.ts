@@ -1,4 +1,5 @@
 import type { ExpressionScope } from "../expression/context.ts";
+import type { FaultLookup } from "../faults.ts";
 import type {
   IntegrationEffect,
   IntegrationRunner,
@@ -19,6 +20,44 @@ export interface PendingMockRequest {
   mockKey: string;
   reason: string;
   expectedShape: unknown;
+  /**
+   * Evidence used to derive this request. These hints are advisory: they make
+   * it clear which parts of a generated mock are grounded in the workflow
+   * and which parts are a best-effort fallback. Optional to retain
+   * compatibility with third-party executors compiled against older s8n.
+   */
+  provenance?: MockProvenance[];
+  /**
+   * Expected output-item cardinality after this mock is normalized. A mock
+   * may still be an array when the workflow intentionally needs fan-out.
+   * Optional to retain compatibility with third-party executors.
+   */
+  cardinalityHint?: MockCardinalityHint;
+}
+
+/** Origin of an advisory mock-contract hint. */
+export type MockProvenanceSource =
+  | "downstream-expression"
+  | "node-hint"
+  | "user"
+  | "generic";
+
+/** How directly the source supports the corresponding mock-contract hint. */
+export type MockHintConfidence = "high" | "medium" | "low";
+
+export interface MockProvenance {
+  source: MockProvenanceSource;
+  confidence: MockHintConfidence;
+  detail: string;
+}
+
+export interface MockCardinalityHint {
+  /** Minimum items that a useful mock should emit. */
+  minItems: number;
+  /** Recommended item count when no workflow-specific count is known. */
+  preferredItems: number;
+  /** Whether an array mock may intentionally emit more than one item. */
+  allowsMultiple: boolean;
 }
 
 export type NodeExecuteResult =
@@ -43,8 +82,12 @@ export interface RuntimeContext {
   nodeOutputs: Map<string, Item[]>;
   now?: Date;
   mocks: MockLookup;
+  /** Optional deterministic failure injection at external-I/O boundaries. */
+  faults?: FaultLookup;
   /** Field names (e.g. from `$json.foo` references) seen anywhere in the workflow, used as a hint when requesting mock data. */
   suggestedFields: string[];
+  /** Field hints limited to each node's reachable downstream main graph. */
+  suggestedFieldsByNode?: Map<string, string[]>;
   /** True when the caller passed `--input`; data-dependent triggers (e.g. Webhook) use this to decide whether to request a mock. */
   hasExplicitInput: boolean;
   /**
@@ -70,6 +113,10 @@ export interface RuntimeContext {
   >;
   /** Verified local side effects emitted by integration emulators. */
   integrationEffects: IntegrationEffect[];
+  /** Code execution boundary. In-process preserves legacy behavior; vm adds a timeout. */
+  codeExecutionMode?: "in-process" | "vm" | "os" | "auto";
+  /** Maximum execution time for vm-isolated Code nodes. */
+  codeTimeoutMs?: number;
 }
 
 export interface ExecuteArgs {

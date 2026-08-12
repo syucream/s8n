@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { FAULT_KINDS } from "../faults.ts";
 import { EMULATED_SERVICES } from "../integrations/types.ts";
 
 const nonEmptyPathSchema = z.string().min(1);
@@ -29,6 +30,8 @@ const scenarioRunOverlayShape = {
   emulate: z.array(z.enum(EMULATED_SERVICES)).optional(),
   emulatorSeedFile: nonEmptyPathSchema.optional(),
   resolveCodeIncludes: z.boolean().optional(),
+  codeMode: z.enum(["in-process", "vm", "os", "auto"]).optional(),
+  codeTimeoutMs: z.number().int().positive().optional(),
 };
 
 function validateRunOverlay(
@@ -68,6 +71,26 @@ export const scenarioRunOverlaySchema = z
 
 export type ScenarioRunOverlay = z.infer<typeof scenarioRunOverlaySchema>;
 
+export const scenarioFaultSchema = z
+  .object({
+    node: z.string().min(1),
+    kind: z.enum(FAULT_KINDS),
+    statusCode: z.number().int().min(100).max(599).optional(),
+    message: z.string().min(1).optional(),
+  })
+  .strict()
+  .superRefine((fault, context) => {
+    if (fault.statusCode !== undefined && fault.kind !== "http-error") {
+      context.addIssue({
+        code: "custom",
+        path: ["statusCode"],
+        message: "statusCode is only valid for http-error faults",
+      });
+    }
+  });
+
+export type ScenarioFault = z.infer<typeof scenarioFaultSchema>;
+
 export const scenarioNodeOutputAssertionSchema = z
   .object({
     node: z.string().min(1),
@@ -84,21 +107,124 @@ export type ScenarioNodeOutputAssertion = z.infer<
   typeof scenarioNodeOutputAssertionSchema
 >;
 
+/** Identifies one directed main-connection edge in a workflow. */
+export const scenarioEdgeAssertionSchema = z
+  .object({
+    sourceNode: z.string().min(1),
+    sourceOutput: z.number().int().nonnegative(),
+    destinationNode: z.string().min(1),
+    destinationInput: z.number().int().nonnegative(),
+  })
+  .strict();
+
+export type ScenarioEdgeAssertion = z.infer<typeof scenarioEdgeAssertionSchema>;
+
+const itemCountBoundsShape = {
+  exact: z.number().int().nonnegative().optional(),
+  min: z.number().int().nonnegative().optional(),
+  max: z.number().int().nonnegative().optional(),
+};
+
+function validateItemCountBounds(
+  bounds: z.infer<z.ZodObject<typeof itemCountBoundsShape>>,
+  context: z.RefinementCtx,
+): void {
+  if (
+    bounds.exact === undefined &&
+    bounds.min === undefined &&
+    bounds.max === undefined
+  ) {
+    context.addIssue({
+      code: "custom",
+      message: "Expected at least one of exact, min, or max",
+    });
+  }
+  if (
+    bounds.min !== undefined &&
+    bounds.max !== undefined &&
+    bounds.min > bounds.max
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["max"],
+      message: "max must be greater than or equal to min",
+    });
+  }
+  if (
+    bounds.exact !== undefined &&
+    ((bounds.min !== undefined && bounds.exact < bounds.min) ||
+      (bounds.max !== undefined && bounds.exact > bounds.max))
+  ) {
+    context.addIssue({
+      code: "custom",
+      path: ["exact"],
+      message: "exact must be within min and max bounds",
+    });
+  }
+}
+
+/** Checks the final flattened main-output item count for one node. */
+export const scenarioNodeOutputCardinalityAssertionSchema = z
+  .object({
+    node: z.string().min(1),
+    ...itemCountBoundsShape,
+  })
+  .strict()
+  .superRefine(validateItemCountBounds);
+
+export type ScenarioNodeOutputCardinalityAssertion = z.infer<
+  typeof scenarioNodeOutputCardinalityAssertionSchema
+>;
+
+/** Checks origin identifiers retained for one final main-output item. */
+export const scenarioNodeOutputLineageAssertionSchema = z
+  .object({
+    node: z.string().min(1),
+    item: z.number().int().nonnegative().optional(),
+    lineage: z.array(z.string().min(1)).optional(),
+    lineageContains: z.array(z.string().min(1)).min(1).optional(),
+  })
+  .strict()
+  .superRefine((assertion, context) => {
+    if (
+      assertion.lineage === undefined &&
+      assertion.lineageContains === undefined
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "Expected lineage or lineageContains",
+      });
+    }
+  });
+
+export type ScenarioNodeOutputLineageAssertion = z.infer<
+  typeof scenarioNodeOutputLineageAssertionSchema
+>;
+
 export const scenarioAssertionsSchema = z
   .object({
     status: z
       .enum(["success", "error", "needs_mock", "needs_start_node"])
       .optional(),
     minimumCoverage: z.number().min(0).max(1).optional(),
+    minimumBranchCoverage: z.number().min(0).max(1).optional(),
     requiredNodes: z.array(z.string().min(1)).optional(),
     forbiddenNodes: z.array(z.string().min(1)).optional(),
+    requiredEdges: z.array(scenarioEdgeAssertionSchema).optional(),
+    forbiddenEdges: z.array(scenarioEdgeAssertionSchema).optional(),
     pendingMockCount: z.number().int().nonnegative().optional(),
     verifiedEffects: z.boolean().optional(),
     subExecutionCount: z.number().int().nonnegative().optional(),
     nodeOutputItemCounts: z
       .record(z.string().min(1), z.number().int().nonnegative())
       .optional(),
+    nodeOutputCardinality: z
+      .array(scenarioNodeOutputCardinalityAssertionSchema)
+      .optional(),
     nodeOutputs: z.array(scenarioNodeOutputAssertionSchema).optional(),
+    nodeOutputLineage: z
+      .array(scenarioNodeOutputLineageAssertionSchema)
+      .optional(),
   })
   .strict();
 
@@ -106,13 +232,27 @@ export type ScenarioAssertions = z.infer<typeof scenarioAssertionsSchema>;
 
 const scenarioCaseBaseSchema = z.object({
   name: z.string().min(1),
+  faults: z.array(scenarioFaultSchema).optional(),
   assertions: scenarioAssertionsSchema.optional(),
 });
 
 export const scenarioCaseSchema = scenarioCaseBaseSchema
   .extend(scenarioRunOverlayShape)
   .strict()
-  .superRefine(validateRunOverlay);
+  .superRefine((scenario, context) => {
+    validateRunOverlay(scenario, context);
+    const targetedNodes = new Set<string>();
+    scenario.faults?.forEach((fault, index) => {
+      if (targetedNodes.has(fault.node)) {
+        context.addIssue({
+          code: "custom",
+          path: ["faults", index, "node"],
+          message: `Duplicate fault target: ${fault.node}`,
+        });
+      }
+      targetedNodes.add(fault.node);
+    });
+  });
 
 export type ScenarioCase = z.infer<typeof scenarioCaseSchema>;
 

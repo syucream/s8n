@@ -1,6 +1,13 @@
+import { createContext, Script } from "node:vm";
+import type { ExpressionScope } from "../../expression/context.ts";
 import { SAFE_RUNTIME_GLOBALS } from "../../expression/safe-globals.ts";
 import type { Item } from "../../schema/item.ts";
-import type { NodeExecutor } from "../types.ts";
+import {
+  type OsCodeRequest,
+  OsSandboxUnavailableError,
+  runOsCode,
+} from "../code-sandbox.ts";
+import type { NodeExecutor, RuntimeContext } from "../types.ts";
 
 /**
  * Code: runs caller-supplied JavaScript as the sole "compute" node type.
@@ -11,12 +18,99 @@ import type { NodeExecutor } from "../types.ts";
  * JavaScript; use OS-level isolation for untrusted workflows.
  */
 
-function runCode(code: string, scope: Record<string, unknown>): unknown {
+function runCode(
+  code: string,
+  scope: Record<string, unknown>,
+  mode: "in-process" | "vm" = "in-process",
+  timeoutMs = 1000,
+): unknown {
   const guardedScope = { ...scope, ...SAFE_RUNTIME_GLOBALS };
+  if (mode === "vm") {
+    const context = createContext({ ...guardedScope });
+    const script = new Script(`(function () { "use strict";\n${code}\n})()`);
+    return script.runInContext(context, { timeout: timeoutMs });
+  }
   const names = Object.keys(guardedScope);
   const values = Object.values(guardedScope);
   const fn = new Function(...names, `"use strict";\n${code}\n`);
   return fn(...values);
+}
+
+function osRequest(
+  code: string,
+  nodeName: string,
+  scope: ExpressionScope,
+  inputItems: Item[],
+  itemIndex: number,
+  runtime: RuntimeContext,
+  mode: "runOnceForAllItems" | "runOnceForEachItem",
+  item?: Item,
+): OsCodeRequest {
+  const legacyNodeOutputs = Object.fromEntries(runtime.nodeOutputs.entries());
+  const nodeOutputs = Object.fromEntries(
+    [...runtime.nodeOutputs.keys()].map((name) => {
+      try {
+        return [name, scope.$(name).all()];
+      } catch {
+        return [name, runtime.nodeOutputs.get(name) ?? []];
+      }
+    }),
+  );
+  const now = scope.$now.toISO();
+  return {
+    code,
+    mode,
+    item,
+    items: inputItems,
+    itemIndex,
+    nodeName,
+    scope: {
+      json: scope.$json,
+      binary: scope.$binary,
+      workflow: scope.$workflow,
+      now: now ?? undefined,
+      timezone: scope.$now.zoneName ?? undefined,
+    },
+    nodeOutputs,
+    legacyNodeOutputs,
+    staticData: Object.fromEntries(runtime.workflowStaticData.entries()),
+    dateNow: runtime.now?.toISOString(),
+  };
+}
+
+function applyStaticData(
+  runtime: RuntimeContext,
+  values: Record<string, Record<string, unknown>>,
+): void {
+  for (const [key, value] of Object.entries(values)) {
+    runtime.workflowStaticData.set(key, value);
+  }
+}
+
+async function runWithBoundary(
+  code: string,
+  fallbackScope: Record<string, unknown>,
+  request: OsCodeRequest,
+  runtime: RuntimeContext,
+): Promise<unknown> {
+  const mode = runtime.codeExecutionMode;
+  if (mode !== "os" && mode !== "auto") {
+    return runCode(code, fallbackScope, mode, runtime.codeTimeoutMs);
+  }
+  try {
+    const response = await runOsCode(
+      request,
+      runtime.codeTimeoutMs ?? 1000,
+      mode === "os",
+    );
+    applyStaticData(runtime, response.staticData);
+    return response.result;
+  } catch (cause) {
+    if (mode === "auto" && cause instanceof OsSandboxUnavailableError) {
+      return runCode(code, fallbackScope, "vm", runtime.codeTimeoutMs);
+    }
+    throw cause;
+  }
 }
 
 /**
@@ -68,7 +162,7 @@ function toItem(value: unknown, pairedItemIndex: number): Item {
 
 export const codeExecutor: NodeExecutor = {
   type: "n8n-nodes-base.code",
-  execute: ({ node, inputItems, runtime, buildScope }) => {
+  execute: async ({ node, inputItems, runtime, buildScope }) => {
     const language = String(node.parameters.language ?? "javaScript");
     if (language !== "javaScript") {
       return {
@@ -92,30 +186,60 @@ export const codeExecutor: NodeExecutor = {
 
     try {
       if (mode === "runOnceForEachItem") {
-        const outputItems = inputItems.map((item, index) => {
+        const outputItems: Item[] = [];
+        for (const [index, item] of inputItems.entries()) {
           // `$json`/`$input`/`$('Node')`/`$now`/`$workflow` all come from the
           // same expression scope used to resolve `={{ }}` parameters
           // elsewhere, so Code node scripts see exactly the same API surface.
           const scope = buildScope(item, index, inputItems);
-          const result = runCode(code, {
+          const fallbackScope = {
             ...scope,
             item,
             $itemIndex: index,
             $getWorkflowStaticData: getWorkflowStaticData,
             Date: ScopedDate,
-          });
-          return toItem(result, index);
-        });
+          };
+          const result = await runWithBoundary(
+            code,
+            fallbackScope,
+            osRequest(
+              code,
+              node.name,
+              scope,
+              inputItems,
+              index,
+              runtime,
+              "runOnceForEachItem",
+              item,
+            ),
+            runtime,
+          );
+          outputItems.push(toItem(result, index));
+        }
         return { status: "success", output: [outputItems] };
       }
 
       const scope = buildScope(inputItems[0] ?? { json: {} }, 0, inputItems);
-      const result = runCode(code, {
+      const fallbackScope = {
         ...scope,
         items: inputItems,
         $getWorkflowStaticData: getWorkflowStaticData,
         Date: ScopedDate,
-      });
+      };
+      const result = await runWithBoundary(
+        code,
+        fallbackScope,
+        osRequest(
+          code,
+          node.name,
+          scope,
+          inputItems,
+          0,
+          runtime,
+          "runOnceForAllItems",
+        ),
+        runtime,
+      );
       const resultArray = Array.isArray(result) ? result : [result];
       const outputItems = resultArray.map((entry, index) =>
         toItem(entry, index),

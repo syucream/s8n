@@ -15,6 +15,8 @@ export interface RehearsalTraceEntry {
   status: string;
   inputItemCounts: number[];
   outputItemCounts?: number[];
+  inputItemLineage?: string[][];
+  outputItemLineage?: string[][];
 }
 
 export interface RehearsalCaseResult {
@@ -29,6 +31,8 @@ export interface RehearsalCaseResult {
     type: string;
     mockKey: string;
     expectedShape: unknown;
+    provenance: RunResult["pendingMocks"][number]["provenance"];
+    cardinalityHint: RunResult["pendingMocks"][number]["cardinalityHint"];
   }>;
   errors: string[];
   trace: RehearsalTraceEntry[];
@@ -65,6 +69,16 @@ function assertionNodeNames(assertions: ScenarioAssertions): string[] {
     ...(assertions.forbiddenNodes ?? []),
     ...Object.keys(assertions.nodeOutputItemCounts ?? {}),
     ...(assertions.nodeOutputs ?? []).map((entry) => entry.node),
+    ...(assertions.nodeOutputCardinality ?? []).map((entry) => entry.node),
+    ...(assertions.nodeOutputLineage ?? []).map((entry) => entry.node),
+    ...(assertions.requiredEdges ?? []).flatMap((edge) => [
+      edge.sourceNode,
+      edge.destinationNode,
+    ]),
+    ...(assertions.forbiddenEdges ?? []).flatMap((edge) => [
+      edge.sourceNode,
+      edge.destinationNode,
+    ]),
   ];
 }
 
@@ -106,6 +120,7 @@ async function runCase(
       workflowFile,
       input,
       mocks,
+      faults: scenario.faults,
       emulatorSeed,
       hasExplicitInput:
         Object.hasOwn(scenario.run, "input") ||
@@ -115,6 +130,8 @@ async function runCase(
       now: scenario.run.now,
       startNode: scenario.run.startNode,
       emulate: scenario.run.emulate,
+      codeExecutionMode: scenario.run.codeMode,
+      codeTimeoutMs: scenario.run.codeTimeoutMs,
     });
     if (!executed.ok) {
       return {
@@ -152,6 +169,8 @@ async function runCase(
         type: request.nodeType,
         mockKey: request.mockKey,
         expectedShape: request.expectedShape,
+        provenance: request.provenance,
+        cardinalityHint: request.cardinalityHint,
       })),
       errors: executed.result.errors,
       trace: executed.result.trace.map((entry) => ({
@@ -162,6 +181,12 @@ async function runCase(
         ...(entry.outputItemCounts === undefined
           ? {}
           : { outputItemCounts: entry.outputItemCounts }),
+        ...(entry.inputItemLineage === undefined
+          ? {}
+          : { inputItemLineage: entry.inputItemLineage }),
+        ...(entry.outputItemLineage === undefined
+          ? {}
+          : { outputItemLineage: entry.outputItemLineage }),
       })),
       effectCount: executed.result.effects.length,
       verifiedEffectCount: executed.result.effects.filter(

@@ -1,7 +1,11 @@
 import { describe, expect, test } from "bun:test";
 import {
+  scenarioEdgeAssertionSchema,
+  scenarioFaultSchema,
   scenarioManifestSchema,
   scenarioNodeOutputAssertionSchema,
+  scenarioNodeOutputCardinalityAssertionSchema,
+  scenarioNodeOutputLineageAssertionSchema,
 } from "./schema.ts";
 
 describe("scenario manifest schema", () => {
@@ -19,7 +23,18 @@ describe("scenario manifest schema", () => {
         {
           name: "normal",
           input: { message: "synthetic" },
-          assertions: { minimumCoverage: 0.8 },
+          assertions: {
+            minimumCoverage: 0.8,
+            minimumBranchCoverage: 0.5,
+            requiredEdges: [
+              {
+                sourceNode: "Trigger",
+                sourceOutput: 0,
+                destinationNode: "Result",
+                destinationInput: 0,
+              },
+            ],
+          },
         },
       ],
     });
@@ -68,5 +83,90 @@ describe("scenario manifest schema", () => {
     });
 
     expect(Object.hasOwn(parsed, "equals")).toBe(true);
+  });
+
+  test("rejects malformed edge assertions and invalid branch coverage", () => {
+    const invalidEdge = scenarioEdgeAssertionSchema.safeParse({
+      sourceNode: "Trigger",
+      sourceOutput: -1,
+      destinationNode: "Result",
+      destinationInput: 0,
+    });
+    const invalidCoverage = scenarioManifestSchema.safeParse({
+      version: 1,
+      cases: [
+        {
+          name: "normal",
+          assertions: { minimumBranchCoverage: 1.1 },
+        },
+      ],
+    });
+
+    expect(invalidEdge.success).toBe(false);
+    expect(invalidCoverage.success).toBe(false);
+  });
+
+  test("validates output cardinality bounds and lineage contracts", () => {
+    expect(
+      scenarioNodeOutputCardinalityAssertionSchema.safeParse({
+        node: "Result",
+        min: 1,
+        max: 2,
+      }).success,
+    ).toBe(true);
+    expect(
+      scenarioNodeOutputCardinalityAssertionSchema.safeParse({
+        node: "Result",
+        min: 2,
+        max: 1,
+      }).success,
+    ).toBe(false);
+    expect(
+      scenarioNodeOutputCardinalityAssertionSchema.safeParse({
+        node: "Result",
+      }).success,
+    ).toBe(false);
+    expect(
+      scenarioNodeOutputLineageAssertionSchema.safeParse({
+        node: "Result",
+        lineageContains: ["input:0"],
+      }).success,
+    ).toBe(true);
+    expect(
+      scenarioNodeOutputLineageAssertionSchema.safeParse({
+        node: "Result",
+      }).success,
+    ).toBe(false);
+  });
+
+  test("accepts deterministic external-I/O faults and rejects ambiguous targets", () => {
+    expect(
+      scenarioFaultSchema.safeParse({
+        node: "Request",
+        kind: "http-error",
+        statusCode: 503,
+      }).success,
+    ).toBe(true);
+    expect(
+      scenarioFaultSchema.safeParse({
+        node: "Request",
+        kind: "timeout",
+        statusCode: 504,
+      }).success,
+    ).toBe(false);
+    expect(
+      scenarioManifestSchema.safeParse({
+        version: 1,
+        cases: [
+          {
+            name: "ambiguous",
+            faults: [
+              { node: "Request", kind: "timeout" },
+              { node: "Request", kind: "malformed-json" },
+            ],
+          },
+        ],
+      }).success,
+    ).toBe(false);
   });
 });
