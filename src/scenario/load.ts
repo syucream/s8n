@@ -1,6 +1,7 @@
 import { dirname, isAbsolute, resolve } from "node:path";
 import {
   type ScenarioAssertions,
+  type ScenarioFault,
   type ScenarioGeneratedFrom,
   type ScenarioManifest,
   type ScenarioRunOverlay,
@@ -10,6 +11,7 @@ import {
 export interface ResolvedScenarioCase {
   name: string;
   run: ScenarioRunOverlay;
+  faults?: ScenarioFault[];
   assertions?: ScenarioAssertions;
 }
 
@@ -89,13 +91,14 @@ export function resolveScenarioManifest(
       ? {}
       : { generatedFrom: manifest.generatedFrom }),
     cases: manifest.cases.map((entry) => {
-      const { name, assertions, ...caseRun } = entry;
+      const { name, faults, assertions, ...caseRun } = entry;
       return {
         name,
         run: resolveRunPaths(
           baseDirectory,
           mergeRunOverlay(manifest.defaults, caseRun),
         ),
+        ...(faults === undefined ? {} : { faults }),
         ...(assertions === undefined ? {} : { assertions }),
       };
     }),

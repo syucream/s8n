@@ -1,4 +1,5 @@
 import { type RunResult, runWorkflow } from "../engine/execute.ts";
+import { createFaultLookup, type ScenarioFault } from "../faults.ts";
 import { EmulatorIntegrationRunner } from "../integrations/emulator.ts";
 import {
   EMULATED_SERVICES,
@@ -19,6 +20,8 @@ export interface RunWorkflowFileOptions {
   input?: unknown;
   /** Parsed inline mocks, not a file path. */
   mocks?: unknown;
+  /** Parsed scenario-only, deterministic fault injections. */
+  faults?: readonly ScenarioFault[];
   /** Parsed inline emulator seed, not a file path. */
   emulatorSeed?: unknown;
   hasExplicitInput: boolean;
@@ -28,6 +31,8 @@ export interface RunWorkflowFileOptions {
   startNode?: string;
   /** Requested emulated services. "all" expands to every supported service. */
   emulate?: readonly string[];
+  codeExecutionMode?: "in-process" | "vm" | "os" | "auto";
+  codeTimeoutMs?: number;
 }
 
 export type RunWorkflowFileResult =
@@ -96,6 +101,25 @@ function resolveEmulatedServices(
   return expanded as EmulatedService[];
 }
 
+function validateFaultTargets(
+  workflow: Workflow,
+  faults: readonly ScenarioFault[] | undefined,
+): string | undefined {
+  if (faults === undefined) return undefined;
+  const nodes = new Map(workflow.nodes.map((node) => [node.name, node]));
+  const registry = createDefaultRegistry();
+  for (const fault of faults) {
+    const node = nodes.get(fault.node);
+    if (node === undefined) {
+      return `Fault references an unknown workflow node: ${fault.node}`;
+    }
+    if (node.type !== "n8n-nodes-base.httpRequest" && registry.has(node.type)) {
+      return `Fault target must be an HTTP Request or generic external node: ${fault.node}`;
+    }
+  }
+  return undefined;
+}
+
 /**
  * Runs one workflow from its canonical workflow file and caller-supplied,
  * already-parsed rehearsal values. It is deliberately CLI-output agnostic so
@@ -115,6 +139,14 @@ export async function runWorkflowFile(
       error: loaded.error ?? "Workflow validation failed",
       ...(loaded.issues === undefined ? {} : { issues: loaded.issues }),
     };
+  }
+
+  const faultTargetError = validateFaultTargets(
+    loaded.workflow,
+    options.faults,
+  );
+  if (faultTargetError !== undefined) {
+    return { ok: false, error: faultTargetError };
   }
 
   try {
@@ -170,11 +202,14 @@ export async function runWorkflowFile(
         initialInput,
         hasExplicitInput: options.hasExplicitInput,
         mocks,
+        faults: createFaultLookup(options.faults),
         registry: createDefaultRegistry(),
         now,
         startNode: options.startNode,
         integrationRunner,
         workflowMap: workflowMap?.workflows,
+        codeExecutionMode: options.codeExecutionMode,
+        codeTimeoutMs: options.codeTimeoutMs,
       });
       return { ok: true, workflow: loaded.workflow, result };
     } finally {

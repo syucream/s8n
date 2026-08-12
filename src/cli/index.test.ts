@@ -63,6 +63,55 @@ describe("s8n CLI", () => {
     ).toEqual({ message: "Hello, world!" });
   });
 
+  test("run --determinism-check reports a stable match", async () => {
+    const { stdout, exitCode } = await runCli([
+      "run",
+      path.join(FIXTURES_DIR, "basic.workflow.json"),
+      "--determinism-check",
+    ]);
+    expect(exitCode).toBe(0);
+    const parsed = JSON.parse(stdout);
+    expect(parsed.data.determinism.equal).toBe(true);
+    expect(parsed.data.determinism.fingerprint).toEqual(expect.any(String));
+    expect(parsed.data.result.status).toBe("success");
+  });
+
+  test("run --determinism-check fails when observable output changes", async () => {
+    const tmpFile = path.join(
+      FIXTURES_DIR,
+      ".tmp-nondeterministic.workflow.json",
+    );
+    await Bun.write(
+      tmpFile,
+      JSON.stringify({
+        name: "Nondeterministic",
+        nodes: [
+          {
+            name: "Code",
+            type: "n8n-nodes-base.code",
+            parameters: {
+              jsCode: "return [{ json: { value: Math.random() } }];",
+            },
+          },
+        ],
+        connections: {},
+      }),
+    );
+    try {
+      const { stdout, exitCode } = await runCli([
+        "run",
+        tmpFile,
+        "--determinism-check",
+      ]);
+      const parsed = JSON.parse(stdout);
+      expect(exitCode).toBe(1);
+      expect(parsed.ok).toBe(false);
+      expect(parsed.data.determinism.equal).toBe(false);
+    } finally {
+      await Bun.file(tmpFile).delete?.();
+    }
+  });
+
   test("validate reports schema issues for a malformed workflow file", async () => {
     const tmpFile = path.join(
       FIXTURES_DIR,

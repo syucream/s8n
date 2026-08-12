@@ -34,22 +34,40 @@ cases:
     mocks:
       Fetch Record:
         active: true
+    faults:
+      - node: Fetch Record
+        kind: http-error
+        statusCode: 503
     assertions:
       status: success
       minimumCoverage: 0.8
+      minimumBranchCoverage: 0.75
       requiredNodes: [Store Result]
       forbiddenNodes: [No Results]
+      requiredEdges:
+        - sourceNode: Check Result
+          sourceOutput: 0
+          destinationNode: Store Result
+          destinationInput: 0
       pendingMockCount: 0
       verifiedEffects: true
       subExecutionCount: 1
       nodeOutputItemCounts:
         Store Result: 1
+      nodeOutputCardinality:
+        - node: Store Result
+          min: 1
+          max: 2
       nodeOutputs:
         - node: Store Result
           item: 0
           pointer: /json/saved
           exists: true
           equals: true
+      nodeOutputLineage:
+        - node: Store Result
+          item: 0
+          lineageContains: [input:0]
 ```
 
 The workflow path is deliberately not part of the manifest. Paths inside the
@@ -64,12 +82,39 @@ are:
 - `emulate`
 - `emulatorSeedFile`
 - `resolveCodeIncludes`
+- `codeMode` (`in-process`, `vm`, `os`, or `auto`; `auto` prefers an available
+  macOS/Linux OS sandbox and falls back to `vm`)
+- `codeTimeoutMs` (positive integer for bounded `vm`, `os`, or `auto` Code
+  execution)
 
 A case-level inline value replaces the corresponding default file reference,
 and vice versa. Unknown fields, duplicate case names, invalid input shapes, and
 inline/file conflicts are rejected. `nodeOutputs.pointer` is an RFC 6901 JSON
 Pointer evaluated against an output item, so `/json/value` reads its JSON
 field. Assertions never evaluate JavaScript or workflow expressions.
+
+Cases can also declare `faults` to test an external-I/O failure path. Each
+fault targets one HTTP Request or generic external node by name; only one
+fault may target a node in a case. Supported `kind` values are `timeout`,
+`http-error` (with an optional `statusCode`, defaulting to 500), and
+`malformed-json`. Faults are local deterministic node errors: they do not make
+network requests or wait for elapsed time, and take precedence over supplied
+mocks and enabled emulators for the targeted node.
+
+`minimumBranchCoverage` measures the fraction of main-pipeline edges that
+carried at least one item in the case. `requiredEdges` and `forbiddenEdges`
+identify edges by source/destination node and slot. An edge may have a
+`deliveryCount` even when it carried zero items; that detail is retained in the
+run result so empty branches remain distinguishable from branches that were
+never evaluated.
+
+`nodeOutputItemCounts` remains a compact exact-count map. Use
+`nodeOutputCardinality` when a final flattened main output needs an `exact`,
+`min`, or `max` item-count contract. `nodeOutputLineage` checks the origin IDs
+retained for one final output item: `lineage` requires an exact ordered match,
+while `lineageContains` requires only the listed origins. An omitted `item`
+means item `0`. Lineage is local execution evidence, not a claim about source
+records outside this simulator.
 
 Executed coverage counts nodes that returned `success`, `pinned`, or `error`.
 Waiting mocks and skipped nodes remain uncovered with their trace status as the

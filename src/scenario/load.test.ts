@@ -31,6 +31,9 @@ describe("loadScenarioManifestFile", () => {
         "cases:",
         "  - name: normal",
         "    mocksFile: mocks/normal.json",
+        "    faults:",
+        "      - node: Request",
+        "        kind: timeout",
         "    startNode: Start",
         "    emulate: [slack]",
         "",
@@ -43,6 +46,7 @@ describe("loadScenarioManifestFile", () => {
     expect(loaded.manifest?.cases).toEqual([
       {
         name: "normal",
+        faults: [{ node: "Request", kind: "timeout" }],
         run: {
           inputFile: join(directory, "fixtures/input.json"),
           mocksFile: join(directory, "mocks/normal.json"),

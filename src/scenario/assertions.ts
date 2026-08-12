@@ -1,9 +1,12 @@
 import { isDeepStrictEqual } from "node:util";
-import type { RunResult } from "../engine/execute.ts";
+import type { EdgeCoverageEntry, RunResult } from "../engine/execute.ts";
 import type { Workflow } from "../schema/workflow.ts";
 import type {
   ScenarioAssertions,
+  ScenarioEdgeAssertion,
   ScenarioNodeOutputAssertion,
+  ScenarioNodeOutputCardinalityAssertion,
+  ScenarioNodeOutputLineageAssertion,
 } from "./schema.ts";
 
 const NON_EXECUTABLE_NODE_TYPES = new Set(["n8n-nodes-base.stickyNote"]);
@@ -19,19 +22,26 @@ export interface ScenarioCoverage {
   executedNodes: string[];
   ratio: number;
   uncoveredNodes: UncoveredNode[];
+  edgeCoverage: EdgeCoverageEntry[];
+  branchCoverage: number;
 }
 
 export interface ScenarioAssertionFailure {
   assertion:
     | "status"
     | "minimumCoverage"
+    | "minimumBranchCoverage"
     | "requiredNodes"
     | "forbiddenNodes"
+    | "requiredEdges"
+    | "forbiddenEdges"
     | "pendingMockCount"
     | "verifiedEffects"
     | "subExecutionCount"
     | "nodeOutputItemCounts"
-    | "nodeOutputs";
+    | "nodeOutputs"
+    | "nodeOutputCardinality"
+    | "nodeOutputLineage";
   message: string;
   expected: unknown;
   actual: unknown;
@@ -103,6 +113,8 @@ function calculateCoverage(
         ? 1
         : executedNodes.length / executableNodes.length,
     uncoveredNodes,
+    edgeCoverage: result.edgeCoverage,
+    branchCoverage: result.branchCoverage,
   };
 }
 
@@ -166,6 +178,95 @@ function evaluateNodeOutput(
   }
 }
 
+function evaluateNodeOutputCardinality(
+  assertion: ScenarioNodeOutputCardinalityAssertion,
+  result: RunResult,
+  failures: ScenarioAssertionFailure[],
+): void {
+  const actual = result.nodeOutputs[assertion.node]?.length ?? 0;
+  const fail = (kind: "exact" | "min" | "max", expected: number) => {
+    failures.push({
+      assertion: "nodeOutputCardinality",
+      message: `Final main output item count did not satisfy ${kind} for ${assertion.node}`,
+      expected,
+      actual,
+      node: assertion.node,
+    });
+  };
+  if (assertion.exact !== undefined && actual !== assertion.exact) {
+    fail("exact", assertion.exact);
+  }
+  if (assertion.min !== undefined && actual < assertion.min) {
+    fail("min", assertion.min);
+  }
+  if (assertion.max !== undefined && actual > assertion.max) {
+    fail("max", assertion.max);
+  }
+}
+
+function latestOutputLineage(
+  node: string,
+  result: RunResult,
+): string[][] | undefined {
+  for (let index = result.trace.length - 1; index >= 0; index--) {
+    const entry = result.trace[index];
+    if (entry?.nodeName === node && entry.outputItemLineage !== undefined) {
+      return entry.outputItemLineage;
+    }
+  }
+  return undefined;
+}
+
+function evaluateNodeOutputLineage(
+  assertion: ScenarioNodeOutputLineageAssertion,
+  result: RunResult,
+  failures: ScenarioAssertionFailure[],
+): void {
+  const itemIndex = assertion.item ?? 0;
+  const actual = latestOutputLineage(assertion.node, result)?.[itemIndex];
+  const location = { node: assertion.node, item: itemIndex };
+  if (
+    assertion.lineage !== undefined &&
+    !isDeepStrictEqual(actual, assertion.lineage)
+  ) {
+    failures.push({
+      assertion: "nodeOutputLineage",
+      message: `Final output lineage did not match for ${assertion.node}`,
+      expected: assertion.lineage,
+      actual,
+      ...location,
+    });
+  }
+  if (
+    assertion.lineageContains !== undefined &&
+    !assertion.lineageContains.every((origin) => actual?.includes(origin))
+  ) {
+    failures.push({
+      assertion: "nodeOutputLineage",
+      message: `Final output lineage did not contain all required origins for ${assertion.node}`,
+      expected: assertion.lineageContains,
+      actual,
+      ...location,
+    });
+  }
+}
+
+function edgeMatches(
+  actual: RunResult["edgeCoverage"][number],
+  expected: ScenarioEdgeAssertion,
+): boolean {
+  return (
+    actual.sourceNode === expected.sourceNode &&
+    actual.sourceOutput === expected.sourceOutput &&
+    actual.destinationNode === expected.destinationNode &&
+    actual.destinationInput === expected.destinationInput
+  );
+}
+
+function edgeLabel(edge: ScenarioEdgeAssertion): string {
+  return `${edge.sourceNode}[${edge.sourceOutput}] -> ${edge.destinationNode}[${edge.destinationInput}]`;
+}
+
 /** Evaluates deterministic assertions without evaluating workflow expressions or Code. */
 export function evaluateScenarioAssertions(
   workflow: Workflow,
@@ -194,6 +295,17 @@ export function evaluateScenarioAssertions(
       actual: coverage.ratio,
     });
   }
+  if (
+    assertions.minimumBranchCoverage !== undefined &&
+    result.branchCoverage < assertions.minimumBranchCoverage
+  ) {
+    failures.push({
+      assertion: "minimumBranchCoverage",
+      message: "Branch coverage was below the required minimum",
+      expected: assertions.minimumBranchCoverage,
+      actual: result.branchCoverage,
+    });
+  }
   for (const node of assertions.requiredNodes ?? []) {
     if (!coverage.executedNodes.includes(node)) {
       failures.push({
@@ -213,6 +325,32 @@ export function evaluateScenarioAssertions(
         expected: false,
         actual: true,
         node,
+      });
+    }
+  }
+  for (const edge of assertions.requiredEdges ?? []) {
+    const actual = result.edgeCoverage.find((candidate) =>
+      edgeMatches(candidate, edge),
+    );
+    if (actual?.covered !== true) {
+      failures.push({
+        assertion: "requiredEdges",
+        message: `Required edge was not covered: ${edgeLabel(edge)}`,
+        expected: true,
+        actual: actual?.covered ?? false,
+      });
+    }
+  }
+  for (const edge of assertions.forbiddenEdges ?? []) {
+    const actual = result.edgeCoverage.find((candidate) =>
+      edgeMatches(candidate, edge),
+    );
+    if (actual?.covered === true) {
+      failures.push({
+        assertion: "forbiddenEdges",
+        message: `Forbidden edge was covered: ${edgeLabel(edge)}`,
+        expected: false,
+        actual: true,
       });
     }
   }
@@ -267,6 +405,12 @@ export function evaluateScenarioAssertions(
   }
   for (const assertion of assertions.nodeOutputs ?? []) {
     evaluateNodeOutput(assertion, result, failures);
+  }
+  for (const assertion of assertions.nodeOutputCardinality ?? []) {
+    evaluateNodeOutputCardinality(assertion, result, failures);
+  }
+  for (const assertion of assertions.nodeOutputLineage ?? []) {
+    evaluateNodeOutputLineage(assertion, result, failures);
   }
 
   return { ok: failures.length === 0, coverage, failures };

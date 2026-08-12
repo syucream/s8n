@@ -49,4 +49,40 @@ describe("runWorkflowFile", () => {
       true,
     );
   });
+
+  test("rejects an invalid fault target before executing the workflow", async () => {
+    const workflowFile = path.join(
+      FIXTURES_DIR,
+      ".tmp-invalid-fault.workflow.json",
+    );
+    await Bun.write(
+      workflowFile,
+      JSON.stringify({
+        name: "Invalid fault",
+        nodes: [
+          {
+            name: "Code",
+            type: "n8n-nodes-base.code",
+            parameters: { jsCode: "throw new Error('should not execute');" },
+          },
+        ],
+        connections: {},
+      }),
+    );
+    try {
+      const executed = await runWorkflowFile({
+        workflowFile,
+        faults: [{ node: "Code", kind: "timeout" }],
+        hasExplicitInput: false,
+      });
+
+      expect(executed).toEqual({
+        ok: false,
+        error:
+          "Fault target must be an HTTP Request or generic external node: Code",
+      });
+    } finally {
+      await Bun.file(workflowFile).delete?.();
+    }
+  });
 });

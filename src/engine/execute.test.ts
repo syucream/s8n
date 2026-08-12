@@ -18,6 +18,83 @@ function wf(raw: unknown): Workflow {
 const registry = createDefaultRegistry();
 
 describe("runWorkflow", () => {
+  test("reports main edge coverage and delivered item counts", async () => {
+    const workflow = wf({
+      name: "branch-trace",
+      nodes: [
+        {
+          id: "1",
+          name: "Trigger",
+          type: "n8n-nodes-base.manualTrigger",
+          parameters: {},
+        },
+        {
+          id: "2",
+          name: "Check",
+          type: "n8n-nodes-base.if",
+          parameters: { condition: "={{$json.amount > 100}}" },
+        },
+        {
+          id: "3",
+          name: "High",
+          type: "n8n-nodes-base.set",
+          parameters: { fields: [{ name: "tier", value: "high" }] },
+        },
+        {
+          id: "4",
+          name: "Low",
+          type: "n8n-nodes-base.set",
+          parameters: { fields: [{ name: "tier", value: "low" }] },
+        },
+      ],
+      connections: {
+        Trigger: { main: [[{ node: "Check", type: "main", index: 0 }]] },
+        Check: {
+          main: [
+            [{ node: "High", type: "main", index: 0 }],
+            [{ node: "Low", type: "main", index: 0 }],
+          ],
+        },
+      },
+    });
+
+    const result = await runWorkflow(workflow, {
+      initialInput: toItems([{ amount: 150 }]),
+      hasExplicitInput: true,
+      mocks: emptyMockLookup,
+      registry,
+    });
+
+    expect(result.status).toBe("success");
+    expect(result.branchCoverage).toBe(2 / 3);
+    expect(result.edgeCoverage).toEqual([
+      expect.objectContaining({
+        sourceNode: "Trigger",
+        sourceOutput: 0,
+        destinationNode: "Check",
+        deliveryCount: 1,
+        itemCount: 1,
+        covered: true,
+      }),
+      expect.objectContaining({
+        sourceNode: "Check",
+        sourceOutput: 0,
+        destinationNode: "High",
+        deliveryCount: 1,
+        itemCount: 1,
+        covered: true,
+      }),
+      expect.objectContaining({
+        sourceNode: "Check",
+        sourceOutput: 1,
+        destinationNode: "Low",
+        deliveryCount: 1,
+        itemCount: 0,
+        covered: false,
+      }),
+    ]);
+  });
+
   test("runs a simple trigger -> set chain", async () => {
     const workflow = wf({
       name: "t",
@@ -65,6 +142,8 @@ describe("runWorkflow", () => {
       data: {
         main: [[{ json: { name: "Alice" }, pairedItem: { item: 0 } }]],
       },
+      inputItemLineage: [["input:0"]],
+      outputItemLineage: [["input:0"]],
     });
     expect(triggerRun?.startTime).toBeNumber();
     expect(triggerRun?.executionTime).toBeNumber();
@@ -81,6 +160,8 @@ describe("runWorkflow", () => {
       data: {
         main: [[{ json: { greeting: "Hi Alice" }, pairedItem: { item: 0 } }]],
       },
+      inputItemLineage: [["input:0"]],
+      outputItemLineage: [["input:0"]],
     });
   });
 
@@ -1779,6 +1860,17 @@ describe("runWorkflow", () => {
 
     expect(result.nodeOutputs.Agg).toHaveLength(1);
     expect(result.nodeOutputs.Agg?.[0]?.json).toEqual({ id: [1, 2, 3] });
+    const aggregateRun = result.trace.find(
+      (entry) => entry.nodeName === "Agg" && entry.status === "success",
+    );
+    expect(aggregateRun?.inputItemLineage).toEqual([
+      ["input:0"],
+      ["input:1"],
+      ["input:2"],
+    ]);
+    expect(aggregateRun?.outputItemLineage).toEqual([
+      ["input:0", "input:1", "input:2"],
+    ]);
   });
 
   test("Limit keeps only the last N items when keep=lastItems", async () => {

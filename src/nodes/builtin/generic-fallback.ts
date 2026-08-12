@@ -1,8 +1,13 @@
 import { resolveParameterValue } from "../../expression/evaluator.ts";
+import { formatFaultMessage } from "../../faults.ts";
 import { formatAiRootOutput } from "../../integrations/ai-contract.ts";
 import { findNodeTypeMockHint } from "../../mock/node-type-hints.ts";
 import { normalizeMockToItems } from "../../mock/normalize.ts";
 import { lookupItemMock } from "../../mock/provider.ts";
+import {
+  buildMockContractEvidence,
+  defaultMockCardinalityHint,
+} from "../../mock/request-contract.ts";
 import { buildMockShapeHint } from "../../mock/shape-hint.ts";
 import type { Item } from "../../schema/item.ts";
 import type { ExecuteArgs, NodeExecuteResult } from "../types.ts";
@@ -76,6 +81,11 @@ export async function executeGenericFallback(
         status: "error",
         message: `Failed to evaluate an expression in parameters for node "${node.name}": ${String((cause as Error)?.message ?? cause)}`,
       };
+    }
+
+    const fault = runtime.faults?.get(node.name);
+    if (fault !== undefined) {
+      return { status: "error", message: formatFaultMessage(fault) };
     }
 
     if (runtime.integrationRunner) {
@@ -171,6 +181,9 @@ export async function executeGenericFallback(
 
     if (mockValue === undefined) {
       const tailored = findNodeTypeMockHint(node.type);
+      const suggestedFields =
+        runtime.suggestedFieldsByNode?.get(node.name) ??
+        runtime.suggestedFields;
       const description = tailored
         ? `${tailored.description} Resolved node parameters: ${JSON.stringify(resolvedParams)}`
         : `The JSON data this node (type: "${node.type}") would produce. Resolved node parameters: ${JSON.stringify(
@@ -186,9 +199,21 @@ export async function executeGenericFallback(
           reason: `Node type "${node.type}" has no built-in executor in s8n, so it is treated as external I/O and requires a mock`,
           expectedShape: buildMockShapeHint(
             description,
-            runtime.suggestedFields,
+            suggestedFields,
             tailored?.example,
           ),
+          provenance: buildMockContractEvidence({
+            suggestedFields,
+            ...(tailored === undefined
+              ? {
+                  genericContext:
+                    "No type-specific response contract is available, so the output shape is only a generic JSON fallback.",
+                }
+              : { nodeHint: tailored.description }),
+            userContext:
+              "The node parameters were expression-resolved before this request.",
+          }),
+          cardinalityHint: { ...defaultMockCardinalityHint },
         },
       };
     }

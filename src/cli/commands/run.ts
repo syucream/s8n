@@ -16,6 +16,9 @@ interface RunOpts {
   emulatorSeed?: string;
   executionLog?: boolean;
   truncateData?: string;
+  codeMode?: "in-process" | "vm" | "os" | "auto";
+  codeTimeoutMs?: string;
+  determinismCheck?: boolean;
 }
 
 export function registerRunCommand(program: Command): void {
@@ -64,6 +67,18 @@ export function registerRunCommand(program: Command): void {
       "--truncate-data <count>",
       "Limit items retained per node output in --execution-log",
     )
+    .option(
+      "--code-mode <mode>",
+      "Code node boundary: in-process (default), vm, os, or auto",
+    )
+    .option(
+      "--code-timeout-ms <milliseconds>",
+      "Timeout for vm Code nodes (default: 1000)",
+    )
+    .option(
+      "--determinism-check",
+      "Run twice and compare stable execution evidence",
+    )
     .action(async (workflowFile: string, opts: RunOpts) => {
       let input: unknown;
       try {
@@ -108,6 +123,34 @@ export function registerRunCommand(program: Command): void {
 
       try {
         const emulatorSeed = await loadJsonFile(opts.emulatorSeed);
+        const codeTimeoutMs =
+          opts.codeTimeoutMs === undefined
+            ? undefined
+            : Number(opts.codeTimeoutMs);
+        if (
+          codeTimeoutMs !== undefined &&
+          (!Number.isInteger(codeTimeoutMs) || codeTimeoutMs <= 0)
+        ) {
+          printEnvelope({
+            ok: false,
+            command: "run",
+            error: `--code-timeout-ms must be a positive integer: "${opts.codeTimeoutMs}"`,
+          });
+          process.exitCode = 1;
+          return;
+        }
+        if (
+          opts.codeMode !== undefined &&
+          !["in-process", "vm", "os", "auto"].includes(opts.codeMode)
+        ) {
+          printEnvelope({
+            ok: false,
+            command: "run",
+            error: `--code-mode must be "in-process", "vm", "os", or "auto": "${opts.codeMode}"`,
+          });
+          process.exitCode = 1;
+          return;
+        }
         const executed = await runWorkflowFile({
           workflowFile,
           input,
@@ -119,6 +162,8 @@ export function registerRunCommand(program: Command): void {
           now: opts.now,
           startNode: opts.startNode,
           emulate: opts.emulate?.split(","),
+          codeExecutionMode: opts.codeMode,
+          codeTimeoutMs,
         });
         if (!executed.ok) {
           printEnvelope({
@@ -131,22 +176,61 @@ export function registerRunCommand(program: Command): void {
           return;
         }
 
+        let determinism:
+          | { equal: boolean; fingerprint?: string; error?: string }
+          | undefined;
+        if (opts.determinismCheck) {
+          const repeated = await runWorkflowFile({
+            workflowFile,
+            input,
+            mocks,
+            emulatorSeed,
+            hasExplicitInput: opts.input !== undefined,
+            workflowMapFile: opts.workflowMap,
+            resolveCodeIncludes: opts.resolveCodeIncludes === true,
+            now: opts.now,
+            startNode: opts.startNode,
+            emulate: opts.emulate?.split(","),
+            codeExecutionMode: opts.codeMode,
+            codeTimeoutMs,
+          });
+          if (!repeated.ok) {
+            determinism = { equal: false, error: repeated.error };
+          } else {
+            const { stableRunFingerprint } = await import(
+              "../../engine/fingerprint.ts"
+            );
+            const firstFingerprint = stableRunFingerprint(executed.result);
+            const secondFingerprint = stableRunFingerprint(repeated.result);
+            determinism = {
+              equal: firstFingerprint === secondFingerprint,
+              fingerprint: firstFingerprint,
+            };
+          }
+        }
+
+        const outputData = opts.executionLog
+          ? toN8nExecutionLog(executed.result, {
+              workflowId: executed.workflow.id,
+              startNode: opts.startNode,
+              truncateData,
+            })
+          : executed.result;
         printEnvelope({
           ok:
-            executed.result.status === "success" ||
-            executed.result.status === "needs_mock",
+            (executed.result.status === "success" ||
+              executed.result.status === "needs_mock") &&
+            determinism?.equal !== false,
           command: "run",
-          data: opts.executionLog
-            ? toN8nExecutionLog(executed.result, {
-                workflowId: executed.workflow.id,
-                startNode: opts.startNode,
-                truncateData,
-              })
-            : executed.result,
+          data:
+            determinism === undefined
+              ? outputData
+              : { result: outputData, determinism },
         });
         if (
           executed.result.status === "error" ||
-          executed.result.status === "needs_start_node"
+          executed.result.status === "needs_start_node" ||
+          determinism?.equal === false
         )
           process.exitCode = 1;
       } catch (cause) {

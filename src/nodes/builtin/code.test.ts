@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { buildExpressionScope } from "../../expression/context.ts";
 import { toItems } from "../../schema/item.ts";
 import { validateWorkflow } from "../../schema/workflow.ts";
+import { availableOsSandbox } from "../code-sandbox.ts";
 import type { RuntimeContext } from "../types.ts";
 import { codeExecutor } from "./code.ts";
 
@@ -15,6 +16,29 @@ function runtimeFor(): RuntimeContext {
     workflowStaticData: new Map(),
     integrationEffects: [],
   };
+}
+
+function executeCode(
+  parameters: Record<string, unknown>,
+  runtime: RuntimeContext = runtimeFor(),
+) {
+  const inputItems = toItems([{}]);
+  return codeExecutor.execute({
+    node: node(parameters),
+    inputItems,
+    inputSlots: [inputItems],
+    runtime,
+    isStartNode: false,
+    buildScope: (item, itemIndex, items) =>
+      buildExpressionScope({
+        currentItem: item,
+        itemIndex,
+        inputItems: items,
+        currentNodeName: "Code",
+        workflowName: "t",
+        nodeOutputs: new Map(),
+      }),
+  });
 }
 
 function node(parameters: Record<string, unknown>) {
@@ -31,25 +55,9 @@ function node(parameters: Record<string, unknown>) {
 
 describe("codeExecutor", () => {
   test("does not expose host I/O globals", async () => {
-    const inputItems = toItems([{}]);
-    const result = await codeExecutor.execute({
-      node: node({
-        jsCode:
-          "return [{ json: { types: [typeof fetch, typeof process, typeof Bun, typeof require, typeof globalThis.fetch] } }];",
-      }),
-      inputItems,
-      inputSlots: [inputItems],
-      runtime: runtimeFor(),
-      isStartNode: false,
-      buildScope: (item, itemIndex, items) =>
-        buildExpressionScope({
-          currentItem: item,
-          itemIndex,
-          inputItems: items,
-          currentNodeName: "Code",
-          workflowName: "t",
-          nodeOutputs: new Map(),
-        }),
+    const result = await executeCode({
+      jsCode:
+        "return [{ json: { types: [typeof fetch, typeof process, typeof Bun, typeof require, typeof globalThis.fetch] } }];",
     });
 
     expect(result.status).toBe("success");
@@ -61,6 +69,69 @@ describe("codeExecutor", () => {
         "undefined",
         "undefined",
       ]);
+    }
+  });
+
+  test("vm mode runs in a fresh context and preserves the workflow result", async () => {
+    const result = await executeCode(
+      {
+        jsCode: "return [{ json: { value: 42, fetch: typeof fetch } }];",
+      },
+      { ...runtimeFor(), codeExecutionMode: "vm" },
+    );
+
+    expect(result.status).toBe("success");
+    if (result.status === "success") {
+      expect(result.output[0]?.[0]?.json).toEqual({
+        value: 42,
+        fetch: "undefined",
+      });
+    }
+  });
+
+  test("vm mode turns an execution timeout into a node error", async () => {
+    const result = await executeCode(
+      { jsCode: "while (true) {}", mode: "runOnceForAllItems" },
+      { ...runtimeFor(), codeExecutionMode: "vm", codeTimeoutMs: 10 },
+    );
+
+    expect(result.status).toBe("error");
+    if (result.status === "error") {
+      expect(result.message).toContain("Script execution timed out");
+    }
+  });
+
+  test("auto mode uses the OS sandbox when available and otherwise falls back to vm", async () => {
+    const result = await executeCode(
+      { jsCode: "return [{ json: { value: 7 } }];" },
+      { ...runtimeFor(), codeExecutionMode: "auto" },
+    );
+
+    expect(result.status).toBe("success");
+    if (result.status === "success") {
+      expect(result.output[0]?.[0]?.json.value).toBe(7);
+    }
+  });
+
+  test("os mode executes in the platform sandbox when one is installed", async () => {
+    if (!availableOsSandbox()) return;
+    const result = await executeCode(
+      { jsCode: "return [{ json: { value: 8, fetch: typeof fetch } }];" },
+      { ...runtimeFor(), codeExecutionMode: "os" },
+    );
+
+    if (
+      result.status === "error" &&
+      /sandbox_apply|operation not permitted|unavailable/i.test(result.message)
+    )
+      return;
+
+    expect(result.status).toBe("success");
+    if (result.status === "success") {
+      expect(result.output[0]?.[0]?.json).toEqual({
+        value: 8,
+        fetch: "undefined",
+      });
     }
   });
 
