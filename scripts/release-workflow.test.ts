@@ -18,3 +18,7 @@ test("package releases pass the resolved tag to the release workflow", () => {
     `release_tag: \${{ needs.prepare.outputs.tag }}`,
   );
 });
+
+test("release publishing resolves the repository without a checkout", () => {
+  expect(releaseWorkflow).toContain(`--repo "$GITHUB_REPOSITORY"`);
+});
