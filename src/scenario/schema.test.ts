@@ -6,6 +6,7 @@ import {
   scenarioNodeOutputAssertionSchema,
   scenarioNodeOutputCardinalityAssertionSchema,
   scenarioNodeOutputLineageAssertionSchema,
+  scenarioNodeRequestAssertionSchema,
 } from "./schema.ts";
 
 describe("scenario manifest schema", () => {
@@ -83,6 +84,22 @@ describe("scenario manifest schema", () => {
     });
 
     expect(Object.hasOwn(parsed, "equals")).toBe(true);
+  });
+
+  test("requires request assertions to check existence or equality", () => {
+    expect(
+      scenarioNodeRequestAssertionSchema.safeParse({
+        node: "Request",
+        pointer: "/body/state",
+      }).success,
+    ).toBe(false);
+    expect(
+      scenarioNodeRequestAssertionSchema.safeParse({
+        node: "Request",
+        pointer: "/body/state",
+        exists: false,
+      }).success,
+    ).toBe(true);
   });
 
   test("rejects malformed edge assertions and invalid branch coverage", () => {

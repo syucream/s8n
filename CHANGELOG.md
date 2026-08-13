@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Validate HTTP Request mock shapes against full-response configuration and
+  expose opt-in sanitized request evidence for local write-path assertions.
+- Match `alwaysOutputData` when an empty input reaches external-I/O nodes without
+  requesting a mock for an operation that would not run.
+
 ## 0.6.0 - 2026-08-09
 
 - Load workflow JSON or YAML, with opt-in traversal-safe Code asset includes.

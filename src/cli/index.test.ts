@@ -63,6 +63,59 @@ describe("s8n CLI", () => {
     ).toEqual({ message: "Hello, world!" });
   });
 
+  test("run captures resolved HTTP requests only with explicit --trace-requests", async () => {
+    const workflowFile = path.join(
+      FIXTURES_DIR,
+      ".tmp-request-trace.workflow.json",
+    );
+    const mocksFile = path.join(FIXTURES_DIR, ".tmp-request-trace.mocks.json");
+    await Bun.write(
+      workflowFile,
+      JSON.stringify({
+        name: "Request trace",
+        nodes: [
+          {
+            name: "Request",
+            type: "n8n-nodes-base.httpRequest",
+            typeVersion: 4.4,
+            parameters: {
+              method: "POST",
+              url: "https://example.com/resources",
+              sendHeaders: true,
+              headerParameters: {
+                parameters: [
+                  { name: "Authorization", value: "private-header-sentinel" },
+                ],
+              },
+            },
+          },
+        ],
+        connections: {},
+      }),
+    );
+    await Bun.write(mocksFile, JSON.stringify({ Request: { ok: true } }));
+    try {
+      const regular = await runCli(["run", workflowFile, "--mocks", mocksFile]);
+      expect(regular.exitCode).toBe(0);
+      expect(regular.stdout).not.toContain("resolvedRequests");
+      expect(regular.stdout).not.toContain("private-header-sentinel");
+
+      const traced = await runCli([
+        "run",
+        workflowFile,
+        "--mocks",
+        mocksFile,
+        "--trace-requests",
+      ]);
+      expect(traced.exitCode).toBe(0);
+      expect(traced.stdout).toContain("resolvedRequests");
+      expect(traced.stdout).not.toContain("private-header-sentinel");
+    } finally {
+      await Bun.file(workflowFile).delete?.();
+      await Bun.file(mocksFile).delete?.();
+    }
+  });
+
   test("run --determinism-check reports a stable match", async () => {
     const { stdout, exitCode } = await runCli([
       "run",

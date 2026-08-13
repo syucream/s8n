@@ -19,6 +19,7 @@ interface RunOpts {
   codeMode?: "in-process" | "vm" | "os" | "auto";
   codeTimeoutMs?: string;
   determinismCheck?: boolean;
+  traceRequests?: boolean;
 }
 
 export function registerRunCommand(program: Command): void {
@@ -78,6 +79,10 @@ export function registerRunCommand(program: Command): void {
     .option(
       "--determinism-check",
       "Run twice and compare stable execution evidence",
+    )
+    .option(
+      "--trace-requests",
+      "Include sanitized resolved HTTP request evidence in trace output",
     )
     .action(async (workflowFile: string, opts: RunOpts) => {
       let input: unknown;
@@ -164,6 +169,7 @@ export function registerRunCommand(program: Command): void {
           emulate: opts.emulate?.split(","),
           codeExecutionMode: opts.codeMode,
           codeTimeoutMs,
+          captureResolvedRequests: opts.traceRequests === true,
         });
         if (!executed.ok) {
           printEnvelope({
@@ -193,6 +199,7 @@ export function registerRunCommand(program: Command): void {
             emulate: opts.emulate?.split(","),
             codeExecutionMode: opts.codeMode,
             codeTimeoutMs,
+            captureResolvedRequests: opts.traceRequests === true,
           });
           if (!repeated.ok) {
             determinism = { equal: false, error: repeated.error };

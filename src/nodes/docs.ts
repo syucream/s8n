@@ -45,6 +45,8 @@ export const NODE_TYPE_DOCS: NodeTypeDoc[] = [
     parametersShape: {
       method: "string (GET/POST/...); uses the upstream n8n field name",
       url: "string; supports = expressions and uses the upstream n8n field name",
+      "options.response.response.fullResponse":
+        "boolean, default false; when true, supplied mock output should include body, headers, statusCode, and statusMessage",
     },
     requiresMock: true,
     mockKeyConvention: "<nodeName> or <nodeName>#<itemIndex>",

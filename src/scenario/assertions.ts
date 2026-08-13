@@ -7,6 +7,7 @@ import type {
   ScenarioNodeOutputAssertion,
   ScenarioNodeOutputCardinalityAssertion,
   ScenarioNodeOutputLineageAssertion,
+  ScenarioNodeRequestAssertion,
 } from "./schema.ts";
 
 const NON_EXECUTABLE_NODE_TYPES = new Set(["n8n-nodes-base.stickyNote"]);
@@ -41,13 +42,60 @@ export interface ScenarioAssertionFailure {
     | "nodeOutputItemCounts"
     | "nodeOutputs"
     | "nodeOutputCardinality"
-    | "nodeOutputLineage";
+    | "nodeOutputLineage"
+    | "nodeRequests";
   message: string;
   expected: unknown;
   actual: unknown;
   node?: string;
   item?: number;
   pointer?: string;
+}
+
+function evaluateNodeRequest(
+  assertion: ScenarioNodeRequestAssertion,
+  result: RunResult,
+  failures: ScenarioAssertionFailure[],
+): void {
+  const summarize = (value: unknown) => ({
+    present: value !== undefined,
+    kind: Array.isArray(value)
+      ? "array"
+      : value === null
+        ? "null"
+        : typeof value,
+  });
+  const requestIndex = assertion.request ?? 0;
+  const requests = result.trace.flatMap((entry) =>
+    entry.nodeName === assertion.node ? (entry.resolvedRequests ?? []) : [],
+  );
+  const observed = readJsonPointer(requests[requestIndex], assertion.pointer);
+  const location = {
+    node: assertion.node,
+    item: requestIndex,
+    ...(assertion.pointer === undefined ? {} : { pointer: assertion.pointer }),
+  };
+  if (assertion.exists !== undefined && observed.exists !== assertion.exists) {
+    failures.push({
+      assertion: "nodeRequests",
+      message: `Resolved request existence did not match for ${assertion.node}`,
+      expected: assertion.exists,
+      actual: observed.exists,
+      ...location,
+    });
+  }
+  if (
+    hasOwn(assertion, "equals") &&
+    !isDeepStrictEqual(observed.value, assertion.equals)
+  ) {
+    failures.push({
+      assertion: "nodeRequests",
+      message: `Resolved request value did not match for ${assertion.node}`,
+      expected: summarize(assertion.equals),
+      actual: summarize(observed.value),
+      ...location,
+    });
+  }
 }
 
 export interface ScenarioAssertionResult {
@@ -405,6 +453,9 @@ export function evaluateScenarioAssertions(
   }
   for (const assertion of assertions.nodeOutputs ?? []) {
     evaluateNodeOutput(assertion, result, failures);
+  }
+  for (const assertion of assertions.nodeRequests ?? []) {
+    evaluateNodeRequest(assertion, result, failures);
   }
   for (const assertion of assertions.nodeOutputCardinality ?? []) {
     evaluateNodeOutputCardinality(assertion, result, failures);

@@ -122,6 +122,16 @@ Then rerun:
 Repeat until the workflow succeeds. This request-and-rerun contract is designed
 to be easy for both people and external AI agents to follow.
 
+For HTTP Request nodes, supplied mocks model the configured node output. When
+`options.response.response.fullResponse` is enabled, use an object containing
+`body`, `headers`, `statusCode`, and `statusMessage`; s8n reports a warning when
+the mock shape contradicts that setting. Successful HTTP trace entries include
+the expression-resolved method, URL, headers, and body only when
+`--trace-requests` is explicitly enabled, so write requests can be checked
+without performing network I/O. Scenario `nodeRequests` assertions enable the
+same evidence internally without copying it into rehearsal trace summaries.
+Credential-like values and unsafe header or raw-body content are redacted.
+
 ## What s8n models
 
 | Workflow behavior | How s8n handles it |
@@ -170,6 +180,7 @@ Useful `run` options:
 - `--now <ISO timestamp>` makes time-dependent expressions reproducible.
 - `--start-node <name>` chooses one of multiple possible entry points.
 - `--execution-log` adds an n8n-shaped `resultData.runData` record.
+- `--trace-requests` explicitly includes sanitized resolved HTTP request evidence.
 - `--truncate-data <count>` bounds retained execution-log items.
 - `--code-mode vm` runs Code nodes in a fresh Node VM context with a bounded
   timeout; `--code-mode os` uses `sandbox-exec` on macOS or `bwrap` on Linux

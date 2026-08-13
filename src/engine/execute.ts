@@ -14,6 +14,7 @@ import type {
   NodeExecuteResult,
   NodeExecutor,
   PendingMockRequest,
+  ResolvedRequest,
   RuntimeContext,
 } from "../nodes/types.ts";
 import type { Item } from "../schema/item.ts";
@@ -51,6 +52,8 @@ export interface RunOptions {
   codeExecutionMode?: "in-process" | "vm" | "os" | "auto";
   /** Timeout used by vm Code execution. Defaults to 1000ms. */
   codeTimeoutMs?: number;
+  /** Explicitly capture sanitized HTTP request evidence. Disabled by default. */
+  captureResolvedRequests?: boolean;
 }
 
 export type NodeTraceStatus =
@@ -85,6 +88,10 @@ export interface NodeTraceEntry {
   outputItemCounts?: number[];
   error?: string;
   pendingMock?: PendingMockRequest;
+  /** Expression-resolved external requests observed locally. Nothing is sent over the network. */
+  resolvedRequests?: ResolvedRequest[];
+  /** Non-fatal contract mismatches or ambiguous inputs observed for this node run. */
+  warnings?: string[];
   /**
    * Set when this node ran as part of a Split In Batches loop body: which
    * batch iteration (0-based) this entry belongs to. A loop-body node
@@ -169,6 +176,7 @@ export interface RunResult {
   nodeOutputs: Record<string, Item[]>;
   pendingMocks: PendingMockRequest[];
   errors: string[];
+  warnings?: string[];
   /** Stateful local integration effects that were confirmed by reading emulator state. */
   effects: IntegrationEffect[];
   /** AI-readable evidence for explicitly mapped child workflow executions. */
@@ -278,6 +286,7 @@ export async function runWorkflow(
   let executionIndex = 0;
   const pendingMocks: PendingMockRequest[] = [];
   const errors: string[] = [];
+  const warnings: string[] = [];
   const subExecutions: SubExecutionSummary[] = [];
   const edgeCoverage = new Map<string, EdgeCoverageEntry>();
   for (const [sourceNode, connectionTypes] of Object.entries(
@@ -389,6 +398,7 @@ export async function runWorkflow(
     integrationEffects: [],
     codeExecutionMode: options.codeExecutionMode,
     codeTimeoutMs: options.codeTimeoutMs,
+    captureResolvedRequests: options.captureResolvedRequests,
   };
   const aiConnectionTypes = [
     "ai_languageModel",
@@ -964,20 +974,33 @@ export async function runWorkflow(
     }
 
     if (result.status === "success") {
-      nodeOutputs.set(nodeName, result.output.flat());
-      nodeSlotOutputs.set(nodeName, result.output);
+      const output =
+        node.alwaysOutputData &&
+        result.output.every((slot) => slot.length === 0)
+          ? [[{ json: {} }]]
+          : result.output;
+      const nodeWarnings = result.warnings ?? [];
+      warnings.push(
+        ...nodeWarnings.map((warning) => `[${nodeName}] ${warning}`),
+      );
+      nodeOutputs.set(nodeName, output.flat());
+      nodeSlotOutputs.set(nodeName, output);
       pushRunTrace(
         {
           nodeName,
           nodeType: node.type,
           status: "success",
           inputItemCounts: inputSlots.map((s) => s.length),
-          outputItemCounts: result.output.map((slot) => slot.length),
+          outputItemCounts: output.map((slot) => slot.length),
+          ...(result.resolvedRequests
+            ? { resolvedRequests: result.resolvedRequests }
+            : {}),
+          ...(nodeWarnings.length > 0 ? { warnings: nodeWarnings } : {}),
           ...(runIndex !== undefined ? { runIndex } : {}),
         },
-        result.output,
+        output,
       );
-      propagate(nodeName, result.output);
+      propagate(nodeName, output);
     } else if (result.status === "waiting_mock") {
       pendingMocks.push(result.request, ...(result.additionalRequests ?? []));
       pushRunTrace({
@@ -1362,6 +1385,7 @@ export async function runWorkflow(
     nodeOutputs: Object.fromEntries(nodeOutputs),
     pendingMocks,
     errors,
+    ...(warnings.length > 0 ? { warnings } : {}),
     effects: runtime.integrationEffects,
     subExecutions,
     edgeCoverage: [...edgeCoverage.values()],

@@ -69,6 +69,7 @@ function assertionNodeNames(assertions: ScenarioAssertions): string[] {
     ...(assertions.forbiddenNodes ?? []),
     ...Object.keys(assertions.nodeOutputItemCounts ?? {}),
     ...(assertions.nodeOutputs ?? []).map((entry) => entry.node),
+    ...(assertions.nodeRequests ?? []).map((entry) => entry.node),
     ...(assertions.nodeOutputCardinality ?? []).map((entry) => entry.node),
     ...(assertions.nodeOutputLineage ?? []).map((entry) => entry.node),
     ...(assertions.requiredEdges ?? []).flatMap((edge) => [
@@ -132,6 +133,7 @@ async function runCase(
       emulate: scenario.run.emulate,
       codeExecutionMode: scenario.run.codeMode,
       codeTimeoutMs: scenario.run.codeTimeoutMs,
+      captureResolvedRequests: (assertions.nodeRequests?.length ?? 0) > 0,
     });
     if (!executed.ok) {
       return {

@@ -533,6 +533,311 @@ describe("runWorkflow", () => {
     expect(withMock.nodeOutputs["Call API"]?.[0]?.json).toEqual({ ok: true });
   });
 
+  test("validates HTTP mock output shape against fullResponse configuration", async () => {
+    const workflow = wf({
+      name: "http-contract",
+      nodes: [
+        {
+          id: "1",
+          name: "Trigger",
+          type: "n8n-nodes-base.manualTrigger",
+          parameters: {},
+        },
+        {
+          id: "2",
+          name: "Call API",
+          type: "n8n-nodes-base.httpRequest",
+          parameters: {
+            method: "GET",
+            url: "https://example.com/resources",
+            options: { response: { response: { fullResponse: true } } },
+          },
+        },
+      ],
+      connections: {
+        Trigger: { main: [[{ node: "Call API", type: "main", index: 0 }]] },
+      },
+    });
+
+    const pending = await runWorkflow(workflow, {
+      hasExplicitInput: false,
+      mocks: emptyMockLookup,
+      registry,
+    });
+    expect(JSON.stringify(pending.pendingMocks[0]?.expectedShape)).toContain(
+      "statusCode",
+    );
+
+    const mismatched = await runWorkflow(workflow, {
+      hasExplicitInput: false,
+      mocks: createMockLookup({ "Call API": { id: "resource-1" } }),
+      registry,
+    });
+    expect(mismatched.status).toBe("success");
+    expect(mismatched.warnings).toHaveLength(1);
+    expect(
+      mismatched.trace.find((entry) => entry.nodeName === "Call API")?.warnings,
+    ).toHaveLength(1);
+
+    const matched = await runWorkflow(workflow, {
+      hasExplicitInput: false,
+      mocks: createMockLookup({
+        "Call API": {
+          body: { id: "resource-1" },
+          headers: {},
+          statusCode: 200,
+          statusMessage: "OK",
+        },
+      }),
+      registry,
+    });
+    expect(matched.warnings ?? []).toEqual([]);
+    expect(matched.nodeOutputs["Call API"]?.[0]?.json.statusCode).toBe(200);
+  });
+
+  test("traces a resolved HTTP request while redacting sensitive values", async () => {
+    const workflow = wf({
+      name: "request-evidence",
+      nodes: [
+        {
+          id: "1",
+          name: "Trigger",
+          type: "n8n-nodes-base.manualTrigger",
+          parameters: {},
+        },
+        {
+          id: "2",
+          name: "Update resource",
+          type: "n8n-nodes-base.httpRequest",
+          parameters: {
+            method: "PATCH",
+            url: "=https://example.com/resources/{{$json.id}}?apiKey={{$json.secret}}",
+            sendHeaders: true,
+            specifyHeaders: "keypair",
+            headerParameters: {
+              parameters: [
+                { name: "Content-Type", value: "application/json" },
+                { name: "Authorization", value: "={{$json.secret}}" },
+                { name: "X-Request-Signature", value: "={{$json.secret}}" },
+              ],
+            },
+            sendBody: true,
+            contentType: "json",
+            specifyBody: "keypair",
+            bodyParameters: {
+              parameters: [
+                { name: "state", value: "ready" },
+                { name: "accessToken", value: "={{$json.secret}}" },
+              ],
+            },
+          },
+        },
+      ],
+      connections: {
+        Trigger: {
+          main: [[{ node: "Update resource", type: "main", index: 0 }]],
+        },
+      },
+    });
+
+    const defaultResult = await runWorkflow(workflow, {
+      initialInput: toItems([{ id: "resource-1", secret: "private-sentinel" }]),
+      hasExplicitInput: true,
+      mocks: createMockLookup({ "Update resource": { ok: true } }),
+      registry,
+    });
+    expect(
+      defaultResult.trace.find((entry) => entry.nodeName === "Update resource")
+        ?.resolvedRequests,
+    ).toBeUndefined();
+
+    const result = await runWorkflow(workflow, {
+      initialInput: toItems([{ id: "resource-1", secret: "private-sentinel" }]),
+      hasExplicitInput: true,
+      mocks: createMockLookup({ "Update resource": { ok: true } }),
+      registry,
+      captureResolvedRequests: true,
+    });
+    const request = result.trace.find(
+      (entry) => entry.nodeName === "Update resource",
+    )?.resolvedRequests?.[0];
+    expect(request).toEqual({
+      method: "PATCH",
+      url: "https://example.com/resources/resource-1?apiKey=%5BREDACTED%5D",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "[REDACTED]",
+        "X-Request-Signature": "[REDACTED]",
+      },
+      body: { state: "ready", accessToken: "[REDACTED]" },
+    });
+    expect(JSON.stringify(request)).not.toContain("private-sentinel");
+  });
+
+  test("does not expose a sensitive URL path when requesting a missing mock", async () => {
+    const workflow = wf({
+      name: "pending-request-privacy",
+      nodes: [
+        {
+          id: "1",
+          name: "Request",
+          type: "n8n-nodes-base.httpRequest",
+          parameters: {
+            method: "GET",
+            url: "https://example.com/hooks/private-path-sentinel?code=private-query-sentinel",
+          },
+        },
+      ],
+      connections: {},
+    });
+    const result = await runWorkflow(workflow, {
+      hasExplicitInput: false,
+      mocks: emptyMockLookup,
+      registry,
+    });
+    expect(JSON.stringify(result.pendingMocks)).not.toContain(
+      "private-path-sentinel",
+    );
+    expect(JSON.stringify(result.pendingMocks)).not.toContain(
+      "private-query-sentinel",
+    );
+    expect(result.pendingMocks[0]?.reason).toContain("https://example.com");
+  });
+
+  test("recognizes legacy HTTP Request method and fullResponse configuration", async () => {
+    const workflow = wf({
+      name: "legacy-http-contract",
+      nodes: [
+        {
+          id: "1",
+          name: "Trigger",
+          type: "n8n-nodes-base.manualTrigger",
+          parameters: {},
+        },
+        {
+          id: "2",
+          name: "Legacy request",
+          type: "n8n-nodes-base.httpRequest",
+          typeVersion: 2,
+          parameters: {
+            requestMethod: "POST",
+            url: "https://example.com/resources",
+            jsonParameters: false,
+            queryParametersUi: {
+              parameter: [{ name: "view", value: "compact" }],
+            },
+            headerParametersUi: {
+              parameter: [{ name: "Content-Type", value: "application/json" }],
+            },
+            bodyParametersUi: {
+              parameter: [{ name: "state", value: "ready" }],
+            },
+            options: { fullResponse: true, bodyContentType: "json" },
+          },
+        },
+      ],
+      connections: {
+        Trigger: {
+          main: [[{ node: "Legacy request", type: "main", index: 0 }]],
+        },
+      },
+    });
+
+    const result = await runWorkflow(workflow, {
+      hasExplicitInput: false,
+      mocks: createMockLookup({ "Legacy request": { id: "resource-1" } }),
+      registry,
+      captureResolvedRequests: true,
+    });
+    expect(result.warnings).toHaveLength(1);
+    expect(
+      result.trace.find((entry) => entry.nodeName === "Legacy request")
+        ?.resolvedRequests?.[0],
+    ).toEqual({
+      method: "POST",
+      url: "https://example.com/resources?view=compact",
+      headers: { "Content-Type": "application/json" },
+      body: { state: "ready" },
+    });
+  });
+
+  test("alwaysOutputData emits one empty item without requesting external I/O for an empty branch", async () => {
+    const workflow = wf({
+      name: "empty-output",
+      nodes: [
+        {
+          id: "1",
+          name: "Trigger",
+          type: "n8n-nodes-base.manualTrigger",
+          parameters: {},
+        },
+        {
+          id: "2",
+          name: "Empty",
+          type: "n8n-nodes-base.if",
+          parameters: { condition: false },
+        },
+        {
+          id: "3",
+          name: "Optional call",
+          type: "n8n-nodes-base.httpRequest",
+          parameters: { url: "https://example.com/optional" },
+          alwaysOutputData: true,
+        },
+      ],
+      connections: {
+        Trigger: { main: [[{ node: "Empty", type: "main", index: 0 }]] },
+        Empty: {
+          main: [[{ node: "Optional call", type: "main", index: 0 }]],
+        },
+      },
+    });
+
+    const result = await runWorkflow(workflow, {
+      initialInput: toItems([{ value: 1 }]),
+      hasExplicitInput: true,
+      mocks: emptyMockLookup,
+      registry,
+    });
+    expect(result.status).toBe("success");
+    expect(result.pendingMocks).toEqual([]);
+    expect(result.nodeOutputs["Optional call"]).toEqual([{ json: {} }]);
+  });
+
+  test("alwaysOutputData emits one empty item when a node receives input but produces no output", async () => {
+    const workflow = wf({
+      name: "empty-result",
+      nodes: [
+        {
+          id: "1",
+          name: "Trigger",
+          type: "n8n-nodes-base.manualTrigger",
+          parameters: {},
+        },
+        {
+          id: "2",
+          name: "Empty request",
+          type: "n8n-nodes-base.httpRequest",
+          parameters: { url: "https://example.com/resources" },
+          alwaysOutputData: true,
+        },
+      ],
+      connections: {
+        Trigger: {
+          main: [[{ node: "Empty request", type: "main", index: 0 }]],
+        },
+      },
+    });
+
+    const result = await runWorkflow(workflow, {
+      initialInput: toItems([{ value: 1 }]),
+      hasExplicitInput: true,
+      mocks: createMockLookup({ "Empty request": [] }),
+      registry,
+    });
+    expect(result.nodeOutputs["Empty request"]).toEqual([{ json: {} }]);
+  });
+
   test("merges two branches back together (append mode)", async () => {
     const workflow = wf({
       name: "t",
