@@ -9,6 +9,12 @@ import {
 import { buildMockShapeHint } from "../../mock/shape-hint.ts";
 import type { Item } from "../../schema/item.ts";
 import type { NodeExecutor } from "../types.ts";
+import {
+  normalizeHttpMock,
+  requestTarget,
+  resolveHttpRequest,
+  usesFullResponse,
+} from "./http-request-contract.ts";
 
 /**
  * HTTP Request, mocked: s8n never performs real network IO. It resolves the
@@ -20,9 +26,19 @@ import type { NodeExecutor } from "../types.ts";
  */
 export const httpRequestExecutor: NodeExecutor = {
   type: "n8n-nodes-base.httpRequest",
-  execute: ({ node, inputItems, runtime, buildScope, loopIterationIndex }) => {
-    const items = inputItems.length > 0 ? inputItems : [{ json: {} }];
+  execute: ({
+    node,
+    inputItems,
+    runtime,
+    buildScope,
+    loopIterationIndex,
+    isStartNode,
+  }) => {
+    const items =
+      inputItems.length > 0 || !isStartNode ? inputItems : [{ json: {} }];
     const outputItems: Item[] = [];
+    const resolvedRequests = [];
+    const warnings = new Set<string>();
 
     for (let i = 0; i < items.length; i++) {
       const item = items[i] as Item;
@@ -31,8 +47,14 @@ export const httpRequestExecutor: NodeExecutor = {
         node.parameters,
         scope,
       ) as Record<string, unknown>;
-      const method = String(resolvedParams.method ?? "GET").toUpperCase();
-      const url = String(resolvedParams.url ?? "");
+      const resolvedRequest = resolveHttpRequest(
+        resolvedParams,
+        node.typeVersion,
+      );
+      const { method, url } = resolvedRequest;
+      if (runtime.captureResolvedRequests) {
+        resolvedRequests.push(resolvedRequest);
+      }
 
       const fault = runtime.faults?.get(node.name);
       if (fault !== undefined) {
@@ -54,20 +76,23 @@ export const httpRequestExecutor: NodeExecutor = {
         const suggestedFields =
           runtime.suggestedFieldsByNode?.get(node.name) ??
           runtime.suggestedFields;
+        const fullResponse = usesFullResponse(resolvedParams, node.typeVersion);
         return {
           status: "waiting_mock",
           request: {
             nodeName: node.name,
             nodeType: node.type,
             mockKey: node.name,
-            reason: `No mock response was provided for HTTP request "${method} ${url || "(unresolved URL)"}"`,
+            reason: `No mock response was provided for HTTP request "${method} ${requestTarget(url)}"`,
             expectedShape: buildMockShapeHint(
-              "The JSON response body for this HTTP request. Provide one object or an array of objects to emit multiple items.",
+              fullResponse
+                ? "The configured HTTP Request node output, with body, headers, statusCode, and statusMessage. Provide one object or an array of objects to emit multiple items."
+                : "The JSON response body for this HTTP request. Provide one object or an array of objects to emit multiple items.",
               suggestedFields,
             ),
             provenance: buildMockContractEvidence({
               suggestedFields,
-              userContext: `The request method and URL were resolved from user configuration as ${method} ${url || "(unresolved URL)"}.`,
+              userContext: `The request method and target origin were resolved from user configuration as ${method} ${requestTarget(url)}.`,
               genericContext:
                 "No remote response schema is fetched because s8n never performs network I/O.",
             }),
@@ -76,9 +101,19 @@ export const httpRequestExecutor: NodeExecutor = {
         };
       }
 
-      outputItems.push(...normalizeMockToItems(mockValue, i));
+      const normalized = normalizeHttpMock(
+        mockValue,
+        usesFullResponse(resolvedParams, node.typeVersion),
+      );
+      for (const warning of normalized.warnings) warnings.add(warning);
+      outputItems.push(...normalizeMockToItems(normalized.value, i));
     }
 
-    return { status: "success", output: [outputItems] };
+    return {
+      status: "success",
+      output: [outputItems],
+      ...(resolvedRequests.length > 0 ? { resolvedRequests } : {}),
+      ...(warnings.size > 0 ? { warnings: [...warnings] } : {}),
+    };
   },
 };

@@ -33,6 +33,7 @@ export interface RunWorkflowFileOptions {
   emulate?: readonly string[];
   codeExecutionMode?: "in-process" | "vm" | "os" | "auto";
   codeTimeoutMs?: number;
+  captureResolvedRequests?: boolean;
 }
 
 export type RunWorkflowFileResult =
@@ -210,6 +211,7 @@ export async function runWorkflowFile(
         workflowMap: workflowMap?.workflows,
         codeExecutionMode: options.codeExecutionMode,
         codeTimeoutMs: options.codeTimeoutMs,
+        captureResolvedRequests: options.captureResolvedRequests,
       });
       return { ok: true, workflow: loaded.workflow, result };
     } finally {

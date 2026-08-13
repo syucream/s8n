@@ -107,6 +107,15 @@ The normal key is the node name. `"<nodeName>#<itemIndex>"` can provide
 per-item output, with the plain node name as fallback. If data is missing, s8n
 returns `needs_mock` with the exact `mockKey` and an `expectedShape` hint.
 
+HTTP Request mocks represent the node's configured output. A node with
+`options.response.response.fullResponse: true` expects `body`, `headers`,
+`statusCode`, and `statusMessage`; contradictory supplied shapes produce a
+non-fatal warning. With explicit `--trace-requests`, each successfully executed
+HTTP Request also records a sanitized `resolvedRequests` array in its trace entry. This local evidence
+contains the resolved method, URL, headers, and body, but it is not a claim of
+wire-level fidelity and no request is sent. Common credential-like keys and URL
+userinfo are redacted. Request evidence is omitted by default.
+
 ### Workflow pin data
 
 n8n exports may contain `pinData`. s8n honors it for any node type and bypasses

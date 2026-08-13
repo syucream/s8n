@@ -64,6 +64,11 @@ cases:
           pointer: /json/saved
           exists: true
           equals: true
+      nodeRequests:
+        - node: Send Result
+          pointer: /body/status
+          exists: true
+          equals: ready
       nodeOutputLineage:
         - node: Store Result
           item: 0
@@ -92,6 +97,12 @@ and vice versa. Unknown fields, duplicate case names, invalid input shapes, and
 inline/file conflicts are rejected. `nodeOutputs.pointer` is an RFC 6901 JSON
 Pointer evaluated against an output item, so `/json/value` reads its JSON
 field. Assertions never evaluate JavaScript or workflow expressions.
+`nodeRequests` uses the same JSON Pointer rules against sanitized resolved HTTP
+request evidence. An optional `request` index selects among per-item requests;
+it defaults to `0`. Assertions cannot inspect redacted credential values.
+Resolved request values are used only while evaluating these assertions and are
+not copied into rehearsal trace summaries. Failure output reports value types,
+not the compared values.
 
 Cases can also declare `faults` to test an external-I/O failure path. Each
 fault targets one HTTP Request or generic external node by name; only one

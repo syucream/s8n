@@ -107,6 +107,28 @@ export type ScenarioNodeOutputAssertion = z.infer<
   typeof scenarioNodeOutputAssertionSchema
 >;
 
+export const scenarioNodeRequestAssertionSchema = z
+  .object({
+    node: z.string().min(1),
+    request: z.number().int().nonnegative().optional(),
+    pointer: jsonPointerSchema.optional(),
+    exists: z.boolean().optional(),
+    equals: z.unknown().optional(),
+  })
+  .strict()
+  .superRefine((assertion, context) => {
+    if (assertion.exists === undefined && !Object.hasOwn(assertion, "equals")) {
+      context.addIssue({
+        code: "custom",
+        message: "Expected exists or equals",
+      });
+    }
+  });
+
+export type ScenarioNodeRequestAssertion = z.infer<
+  typeof scenarioNodeRequestAssertionSchema
+>;
+
 /** Identifies one directed main-connection edge in a workflow. */
 export const scenarioEdgeAssertionSchema = z
   .object({
@@ -222,6 +244,7 @@ export const scenarioAssertionsSchema = z
       .array(scenarioNodeOutputCardinalityAssertionSchema)
       .optional(),
     nodeOutputs: z.array(scenarioNodeOutputAssertionSchema).optional(),
+    nodeRequests: z.array(scenarioNodeRequestAssertionSchema).optional(),
     nodeOutputLineage: z
       .array(scenarioNodeOutputLineageAssertionSchema)
       .optional(),

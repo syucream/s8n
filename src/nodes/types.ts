@@ -60,8 +60,21 @@ export interface MockCardinalityHint {
   allowsMultiple: boolean;
 }
 
+/** Resolved local description of an external request. It is trace evidence only; s8n never sends it. */
+export interface ResolvedRequest {
+  method: string;
+  url: string;
+  headers?: Record<string, unknown>;
+  body?: unknown;
+}
+
 export type NodeExecuteResult =
-  | { status: "success"; output: Item[][] }
+  | {
+      status: "success";
+      output: Item[][];
+      resolvedRequests?: ResolvedRequest[];
+      warnings?: string[];
+    }
   | { status: "error"; message: string }
   | {
       status: "waiting_mock";
@@ -117,6 +130,8 @@ export interface RuntimeContext {
   codeExecutionMode?: "in-process" | "vm" | "os" | "auto";
   /** Maximum execution time for vm-isolated Code nodes. */
   codeTimeoutMs?: number;
+  /** Explicitly capture sanitized HTTP request evidence for local assertions or CLI inspection. */
+  captureResolvedRequests?: boolean;
 }
 
 export interface ExecuteArgs {

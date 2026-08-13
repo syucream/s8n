@@ -45,6 +45,13 @@ function result(): RunResult {
         status: "success",
         inputItemCounts: [1],
         outputItemLineage: [["input:0"]],
+        resolvedRequests: [
+          {
+            method: "PATCH",
+            url: "https://example.com/resources/resource-1",
+            body: { state: "ready" },
+          },
+        ],
       },
       {
         nodeName: "Unreached",
@@ -173,6 +180,19 @@ describe("evaluateScenarioAssertions", () => {
         { node: "Transform", lineage: ["input:0"] },
         { node: "Transform", lineageContains: ["input:0"] },
       ],
+      nodeRequests: [
+        {
+          node: "Transform",
+          pointer: "/body/state",
+          exists: true,
+          equals: "ready",
+        },
+        {
+          node: "Transform",
+          pointer: "/body/forbidden",
+          exists: false,
+        },
+      ],
     });
 
     expect(evaluated).toMatchObject({
@@ -219,6 +239,9 @@ describe("evaluateScenarioAssertions", () => {
         { node: "Transform", pointer: "/json/result/count", equals: 3 },
       ],
       nodeOutputLineage: [{ node: "Transform", lineageContains: ["input:1"] }],
+      nodeRequests: [
+        { node: "Transform", pointer: "/body/state", equals: "blocked" },
+      ],
     });
 
     expect(evaluated.ok).toBe(false);
@@ -235,6 +258,7 @@ describe("evaluateScenarioAssertions", () => {
       "subExecutionCount",
       "nodeOutputItemCounts",
       "nodeOutputs",
+      "nodeRequests",
       "nodeOutputCardinality",
       "nodeOutputLineage",
     ]);
@@ -250,6 +274,23 @@ describe("evaluateScenarioAssertions", () => {
 
     expect(evaluated).toMatchObject({ ok: false });
     expect(evaluated.failures[0]?.assertion).toBe("verifiedEffects");
+  });
+
+  test("does not echo request assertion values in failures", () => {
+    const evaluated = evaluateScenarioAssertions(workflow, result(), {
+      nodeRequests: [
+        {
+          node: "Transform",
+          pointer: "/body/state",
+          equals: "private-expected-sentinel",
+        },
+      ],
+    });
+    expect(evaluated.ok).toBe(false);
+    expect(JSON.stringify(evaluated.failures)).not.toContain(
+      "private-expected-sentinel",
+    );
+    expect(JSON.stringify(evaluated.failures)).not.toContain("ready");
   });
 
   test("reports each violated output cardinality bound and missing lineage", () => {

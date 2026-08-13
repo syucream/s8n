@@ -78,6 +78,10 @@ export function toN8nExecutionLog(
         originalOutputItemCounts: entry.outputItemCounts ?? [],
         dataTruncated: entry.data?.main.some((slot) => slot.length > itemLimit),
         ...(entry.pendingMock ? { pendingMock: entry.pendingMock } : {}),
+        ...(entry.resolvedRequests
+          ? { resolvedRequests: entry.resolvedRequests }
+          : {}),
+        ...(entry.warnings ? { warnings: entry.warnings } : {}),
         ...(options.metadataForTrace?.(entry) ?? {}),
       },
     });

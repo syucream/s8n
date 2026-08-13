@@ -66,7 +66,8 @@ export async function executeGenericFallback(
     return { status: "success", output: [inputItems] };
   }
 
-  const items = inputItems.length > 0 ? inputItems : [{ json: {} }];
+  const items =
+    inputItems.length > 0 || !isStartNode ? inputItems : [{ json: {} }];
   const outputItems: Item[] = [];
 
   for (let i = 0; i < items.length; i++) {
