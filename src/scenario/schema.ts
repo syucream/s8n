@@ -32,6 +32,16 @@ const scenarioRunOverlayShape = {
   resolveCodeIncludes: z.boolean().optional(),
   codeMode: z.enum(["in-process", "vm", "os", "auto"]).optional(),
   codeTimeoutMs: z.number().int().positive().optional(),
+  /**
+   * Resume instructions for waiting nodes, keyed by node name. `"timeout"`
+   * models expiry; an object is the payload delivered to the resumed node.
+   */
+  resume: z
+    .record(
+      z.string().min(1),
+      z.union([z.record(z.string(), z.unknown()), z.literal("timeout")]),
+    )
+    .optional(),
 };
 
 function validateRunOverlay(
@@ -91,13 +101,63 @@ export const scenarioFaultSchema = z
 
 export type ScenarioFault = z.infer<typeof scenarioFaultSchema>;
 
+const regexSchema = z
+  .string()
+  .min(1)
+  .refine((pattern) => {
+    try {
+      new RegExp(pattern);
+      return true;
+    } catch {
+      return false;
+    }
+  }, "Expected a valid regular expression");
+
+/** Bounds substring occurrences inside a pointed-to string value. */
+const occurrencesSchema = z
+  .object({
+    substring: z.string().min(1),
+    atLeast: z.number().int().nonnegative().optional(),
+    atMost: z.number().int().nonnegative().optional(),
+  })
+  .strict()
+  .superRefine((occurrences, context) => {
+    if (occurrences.atLeast === undefined && occurrences.atMost === undefined) {
+      context.addIssue({
+        code: "custom",
+        message: "Expected at least one of atLeast or atMost",
+      });
+    }
+    if (
+      occurrences.atLeast !== undefined &&
+      occurrences.atMost !== undefined &&
+      occurrences.atLeast > occurrences.atMost
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["atMost"],
+        message: "atMost must be greater than or equal to atLeast",
+      });
+    }
+  });
+
+/** String-checks applicable to any pointed-to value. */
+const valueCheckShape = {
+  exists: z.boolean().optional(),
+  equals: z.unknown().optional(),
+  /** Requires the pointed-to value to be a string matching this pattern. */
+  matches: regexSchema.optional(),
+  /** Requires the pointed-to value to be a string NOT matching this pattern. */
+  notMatches: regexSchema.optional(),
+  occurrences: occurrencesSchema.optional(),
+} satisfies Record<string, z.ZodType>;
+
 export const scenarioNodeOutputAssertionSchema = z
   .object({
     node: z.string().min(1),
     item: z.number().int().nonnegative().optional(),
     pointer: jsonPointerSchema.optional(),
-    exists: z.boolean().optional(),
-    equals: z.unknown().optional(),
+    ...valueCheckShape,
   })
   .strict();
 // Zod intentionally treats unknown as optional. The evaluator checks own
@@ -105,6 +165,23 @@ export const scenarioNodeOutputAssertionSchema = z
 
 export type ScenarioNodeOutputAssertion = z.infer<
   typeof scenarioNodeOutputAssertionSchema
+>;
+
+/** Checks the payload delivered to a called child workflow's entry trigger. */
+export const scenarioSubExecutionInputAssertionSchema = z
+  .object({
+    /** The calling node name (the executeWorkflow node in the parent). */
+    callNode: z.string().min(1),
+    /** Which sub-workflow call from that node; defaults to 0. */
+    index: z.number().int().nonnegative().optional(),
+    item: z.number().int().nonnegative().optional(),
+    pointer: jsonPointerSchema.optional(),
+    ...valueCheckShape,
+  })
+  .strict();
+
+export type ScenarioSubExecutionInputAssertion = z.infer<
+  typeof scenarioSubExecutionInputAssertionSchema
 >;
 
 export const scenarioNodeRequestAssertionSchema = z
@@ -226,7 +303,7 @@ export type ScenarioNodeOutputLineageAssertion = z.infer<
 export const scenarioAssertionsSchema = z
   .object({
     status: z
-      .enum(["success", "error", "needs_mock", "needs_start_node"])
+      .enum(["success", "error", "waiting", "needs_mock", "needs_start_node"])
       .optional(),
     minimumCoverage: z.number().min(0).max(1).optional(),
     minimumBranchCoverage: z.number().min(0).max(1).optional(),
@@ -248,6 +325,9 @@ export const scenarioAssertionsSchema = z
     nodeOutputLineage: z
       .array(scenarioNodeOutputLineageAssertionSchema)
       .optional(),
+    subExecutionInputs: z
+      .array(scenarioSubExecutionInputAssertionSchema)
+      .optional(),
   })
   .strict();
 
@@ -257,6 +337,12 @@ const scenarioCaseBaseSchema = z.object({
   name: z.string().min(1),
   faults: z.array(scenarioFaultSchema).optional(),
   assertions: scenarioAssertionsSchema.optional(),
+  /**
+   * Golden-file path (relative to this manifest) for the case's final
+   * `nodeOutputs`. `s8n rehearse --update-snapshots` writes it; plain
+   * rehearsals fail when the observed outputs diverge from it.
+   */
+  snapshot: nonEmptyPathSchema.optional(),
 });
 
 export const scenarioCaseSchema = scenarioCaseBaseSchema
@@ -294,6 +380,22 @@ export const scenarioManifestSchema = z
   .object({
     version: z.literal(1),
     generatedFrom: scenarioGeneratedFromSchema.optional(),
+    /**
+     * Normalized LLM outputs extracted from a real execution log when the
+     * manifest was drafted via `scenario import`; informational review data.
+     */
+    llmOutputs: z
+      .array(
+        z
+          .object({
+            node: z.string().min(1),
+            kind: z.enum(["agent-output", "language-model", "chain-text"]),
+            text: z.string().optional(),
+            output: z.unknown().optional(),
+          })
+          .strict(),
+      )
+      .optional(),
     defaults: scenarioRunOverlaySchema.default({}),
     cases: z.array(scenarioCaseSchema).min(1),
   })

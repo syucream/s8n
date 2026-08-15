@@ -25,6 +25,15 @@ export const defaultMockCardinalityHint: MockCardinalityHint = {
   allowsMultiple: true,
 };
 
+/**
+ * Fidelity note attached to nodes whose output came from a caller-supplied
+ * mock rather than a modeled service contract. Mock data encodes the
+ * author's assumptions, so consumers should verify real-service behavior at
+ * this boundary.
+ */
+export const MOCK_FIDELITY_NOTE =
+  "mocked-output: this node's output came from a caller-supplied mock; real-service responses may differ.";
+
 function evidence(
   source: MockProvenance["source"],
   confidence: MockHintConfidence,

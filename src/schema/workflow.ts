@@ -47,6 +47,8 @@ export const workflowNodeSchema = z.object({
   maxTries: z.number().int().min(1).default(1),
   /** Real n8n (INode.alwaysOutputData): run this node even if all its inputs delivered zero items. */
   alwaysOutputData: z.boolean().default(false),
+  /** Real n8n (INode.executeOnce): run only once, with the first item received. */
+  executeOnce: z.boolean().default(false),
 });
 
 export type WorkflowNode = z.infer<typeof workflowNodeSchema>;

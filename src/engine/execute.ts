@@ -15,6 +15,7 @@ import type {
   NodeExecutor,
   PendingMockRequest,
   ResolvedRequest,
+  ResumeDirective,
   RuntimeContext,
 } from "../nodes/types.ts";
 import type { Item } from "../schema/item.ts";
@@ -54,12 +55,15 @@ export interface RunOptions {
   codeTimeoutMs?: number;
   /** Explicitly capture sanitized HTTP request evidence. Disabled by default. */
   captureResolvedRequests?: boolean;
+  /** Scenario-provided resume instructions keyed by waiting node name. */
+  resumeDirectives?: ReadonlyMap<string, ResumeDirective>;
 }
 
 export type NodeTraceStatus =
   | "success"
   | "error"
   | "waiting_mock"
+  | "waiting"
   | "skipped_disabled"
   | "skipped_annotation"
   | "skipped_non_main_only"
@@ -92,6 +96,12 @@ export interface NodeTraceEntry {
   resolvedRequests?: ResolvedRequest[];
   /** Non-fatal contract mismatches or ambiguous inputs observed for this node run. */
   warnings?: string[];
+  /**
+   * Machine-readable fidelity caveats for this node run: places where the
+   * modeled behavior is known to be narrower than real n8n (e.g. mocked
+   * data, single-page pagination mocks). Informational only.
+   */
+  fidelityNotes?: string[];
   /**
    * Set when this node ran as part of a Split In Batches loop body: which
    * batch iteration (0-based) this entry belongs to. A loop-body node
@@ -167,16 +177,25 @@ export interface SubExecutionSummary {
   pendingMockCount: number;
   errors: string[];
   nested: SubExecutionSummary[];
+  /**
+   * The resolved items delivered to the child workflow's Execute Workflow
+   * Trigger, bounded to the first 100 so the envelope stays readable.
+   * `entryItemCount` is the full count when the input was truncated.
+   */
+  entryItems?: Item[];
+  entryItemCount?: number;
 }
 
 export interface RunResult {
-  status: "success" | "error" | "needs_mock" | "needs_start_node";
+  status: "success" | "error" | "waiting" | "needs_mock" | "needs_start_node";
   workflowName: string;
   trace: NodeTraceEntry[];
   nodeOutputs: Record<string, Item[]>;
   pendingMocks: PendingMockRequest[];
   errors: string[];
   warnings?: string[];
+  /** Aggregated per-node fidelity caveats (see NodeTraceEntry.fidelityNotes). */
+  fidelityNotes?: string[];
   /** Stateful local integration effects that were confirmed by reading emulator state. */
   effects: IntegrationEffect[];
   /** AI-readable evidence for explicitly mapped child workflow executions. */
@@ -287,6 +306,8 @@ export async function runWorkflow(
   const pendingMocks: PendingMockRequest[] = [];
   const errors: string[] = [];
   const warnings: string[] = [];
+  const fidelityNotes: string[] = [];
+  let runWaiting = false;
   const subExecutions: SubExecutionSummary[] = [];
   const edgeCoverage = new Map<string, EdgeCoverageEntry>();
   for (const [sourceNode, connectionTypes] of Object.entries(
@@ -399,6 +420,7 @@ export async function runWorkflow(
     codeExecutionMode: options.codeExecutionMode,
     codeTimeoutMs: options.codeTimeoutMs,
     captureResolvedRequests: options.captureResolvedRequests,
+    resumeDirectives: options.resumeDirectives,
   };
   const aiConnectionTypes = [
     "ai_languageModel",
@@ -725,6 +747,7 @@ export async function runWorkflow(
       workflowMap: options.workflowMap,
       subWorkflowDepthLimit: depthLimit,
       subWorkflowReferenceStack: [...referenceStack, reference],
+      resumeDirectives: options.resumeDirectives,
     });
 
     subExecutions.push({
@@ -736,6 +759,8 @@ export async function runWorkflow(
       pendingMockCount: childResult.pendingMocks.length,
       errors: [...childResult.errors],
       nested: childResult.subExecutions,
+      entryItems: childInput.slice(0, 100),
+      ...(childInput.length > 100 ? { entryItemCount: childInput.length } : {}),
     });
 
     runtime.integrationEffects.push(...childResult.effects);
@@ -759,6 +784,13 @@ export async function runWorkflow(
         ...(requests.length > 1
           ? { additionalRequests: requests.slice(1) }
           : {}),
+      };
+    }
+
+    if (childResult.status === "waiting") {
+      return {
+        status: "waiting",
+        message: `Sub-workflow "${reference}" is waiting and no resume directive resolved it`,
       };
     }
 
@@ -914,6 +946,15 @@ export async function runWorkflow(
         timezone: workflow.settings.timezone,
       });
 
+    // Real n8n runs an `executeOnce` node a single time with only the first
+    // item it received ("the node executes only once, with data from the
+    // first item"). Trace inputItemCounts keep the true delivered counts so
+    // fan-in stays visible in the evidence.
+    const executeInputSlots = node.executeOnce
+      ? inputSlots.map((slot) => slot.slice(0, 1))
+      : inputSlots;
+    const executeInputItems = executeInputSlots[0] ?? [];
+
     let result: NodeExecuteResult;
     if (graph.loops.has(nodeName)) {
       const loopOutcome = await runLoopDriver(nodeName, node, inputItems);
@@ -948,7 +989,11 @@ export async function runWorkflow(
       node.type === EXECUTE_WORKFLOW_NODE_TYPE &&
       options.workflowMap
     ) {
-      result = await executeMappedSubWorkflow(node, inputItems, buildScope);
+      result = await executeMappedSubWorkflow(
+        node,
+        executeInputItems,
+        buildScope,
+      );
     } else {
       // Any node type s8n doesn't explicitly implement is treated as
       // unmodeled external IO and mocked the same way as HTTP Request,
@@ -962,8 +1007,8 @@ export async function runWorkflow(
         executor,
         {
           node,
-          inputItems,
-          inputSlots,
+          inputItems: executeInputItems,
+          inputSlots: executeInputSlots,
           runtime,
           buildScope,
           isStartNode: nodeName === activeStartNode,
@@ -983,6 +1028,10 @@ export async function runWorkflow(
       warnings.push(
         ...nodeWarnings.map((warning) => `[${nodeName}] ${warning}`),
       );
+      const nodeFidelityNotes = result.fidelityNotes ?? [];
+      fidelityNotes.push(
+        ...nodeFidelityNotes.map((note) => `[${nodeName}] ${note}`),
+      );
       nodeOutputs.set(nodeName, output.flat());
       nodeSlotOutputs.set(nodeName, output);
       pushRunTrace(
@@ -996,6 +1045,9 @@ export async function runWorkflow(
             ? { resolvedRequests: result.resolvedRequests }
             : {}),
           ...(nodeWarnings.length > 0 ? { warnings: nodeWarnings } : {}),
+          ...(nodeFidelityNotes.length > 0
+            ? { fidelityNotes: nodeFidelityNotes }
+            : {}),
           ...(runIndex !== undefined ? { runIndex } : {}),
         },
         output,
@@ -1012,6 +1064,19 @@ export async function runWorkflow(
         ...(runIndex !== undefined ? { runIndex } : {}),
       });
       // Execution along this branch pauses here; downstream nodes are simply never reached.
+    } else if (result.status === "waiting") {
+      // A waiting node (Wait / wait-for-approval) with no scenario resume
+      // directive halts its branch. Real n8n would pause until resumed; s8n
+      // reports the incomplete run instead of hanging or fabricating data.
+      runWaiting = true;
+      pushRunTrace({
+        nodeName,
+        nodeType: node.type,
+        status: "waiting",
+        inputItemCounts: inputSlots.map((s) => s.length),
+        error: result.message,
+        ...(runIndex !== undefined ? { runIndex } : {}),
+      });
     } else if (
       node.continueOnFail ||
       node.onError === "continueRegularOutput" ||
@@ -1374,9 +1439,11 @@ export async function runWorkflow(
   const status: RunResult["status"] =
     errors.length > 0
       ? "error"
-      : pendingMocks.length > 0
-        ? "needs_mock"
-        : "success";
+      : runWaiting
+        ? "waiting"
+        : pendingMocks.length > 0
+          ? "needs_mock"
+          : "success";
 
   return {
     status,
@@ -1386,6 +1453,7 @@ export async function runWorkflow(
     pendingMocks,
     errors,
     ...(warnings.length > 0 ? { warnings } : {}),
+    ...(fidelityNotes.length > 0 ? { fidelityNotes } : {}),
     effects: runtime.integrationEffects,
     subExecutions,
     edgeCoverage: [...edgeCoverage.values()],

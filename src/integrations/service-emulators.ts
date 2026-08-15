@@ -30,6 +30,28 @@ function clone<T>(input: T): T {
   return structuredClone(input);
 }
 
+/**
+ * Real BigQuery read APIs return row values as strings (`rows[].f[].v`),
+ * and the upstream n8n node passes them through unchanged unless the
+ * `returnAsNumbers` option converts numeric columns back to numbers.
+ * Booleans therefore surface as "true"/"false" - a mock that returned real
+ * booleans would hide `if (row.is_hit)`-style truthiness bugs, so the
+ * emulator reproduces the string pass-through on every read.
+ */
+function coerceBigQueryRow(row: Json, returnAsNumbers: boolean): Json {
+  return Object.fromEntries(
+    Object.entries(row).map(([key, entry]) => {
+      if (entry === null || entry === undefined) return [key, null];
+      if (typeof entry === "boolean") return [key, String(entry)];
+      if (typeof entry === "number") {
+        return [key, returnAsNumbers ? entry : String(entry)];
+      }
+      if (typeof entry === "object") return [key, JSON.stringify(entry)];
+      return [key, entry];
+    }),
+  );
+}
+
 function contentMetadata(raw: unknown): {
   present: boolean;
   kind: "string" | "array" | "object" | "scalar";
@@ -513,7 +535,12 @@ export class ServiceEmulators {
         const queryRows = fromTable
           ? this.store(`gcp.bigquery.${fromTable}`)
           : rows;
-        const output = [...queryRows.values()].map(clone);
+        const returnAsNumbers =
+          p.returnAsNumbers === true ||
+          object(p.options).returnAsNumbers === true;
+        const output = [...queryRows.values()].map((row) =>
+          coerceBigQueryRow(clone(row), returnAsNumbers),
+        );
         return result(
           node,
           "gcp",

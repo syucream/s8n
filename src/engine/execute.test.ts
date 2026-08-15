@@ -2822,4 +2822,73 @@ describe("runWorkflow", () => {
     expect(result.status).toBe("needs_start_node");
     expect(result.startNodeCandidates).toEqual([]);
   });
+
+  test("executeOnce runs a node once with only its first input item", async () => {
+    const workflow = wf({
+      name: "execute-once",
+      nodes: [
+        { id: "1", name: "Trigger", type: "n8n-nodes-base.manualTrigger" },
+        {
+          id: "2",
+          name: "Collapse",
+          type: "n8n-nodes-base.set",
+          executeOnce: true,
+          parameters: {
+            assignments: {
+              assignments: [{ name: "seen", value: "={{ $itemIndex }}" }],
+            },
+          },
+        },
+      ],
+      connections: {
+        Trigger: { main: [[{ node: "Collapse", type: "main", index: 0 }]] },
+      },
+    });
+
+    const result = await runWorkflow(workflow, {
+      initialInput: toItems([{ a: 1 }, { a: 2 }, { a: 3 }]),
+      hasExplicitInput: true,
+      mocks: emptyMockLookup,
+      registry,
+    });
+
+    expect(result.status).toBe("success");
+    // Delivered count stays visible in the evidence...
+    const trace = result.trace.find((t) => t.nodeName === "Collapse");
+    expect(trace?.inputItemCounts).toEqual([3]);
+    // ...but only the first item fed the run, matching real n8n.
+    expect(result.nodeOutputs.Collapse).toEqual([
+      expect.objectContaining({ json: { seen: 0 } }),
+    ]);
+  });
+
+  test("mock-served nodes carry a mocked-output fidelity note", async () => {
+    const workflow = wf({
+      name: "fidelity",
+      nodes: [
+        { id: "1", name: "Trigger", type: "n8n-nodes-base.manualTrigger" },
+        {
+          id: "2",
+          name: "Fetch",
+          type: "n8n-nodes-base.httpRequest",
+          parameters: { method: "GET", url: "https://example.com/rows" },
+        },
+      ],
+      connections: {
+        Trigger: { main: [[{ node: "Fetch", type: "main", index: 0 }]] },
+      },
+    });
+
+    const result = await runWorkflow(workflow, {
+      initialInput: toItems([{}]),
+      hasExplicitInput: true,
+      mocks: createMockLookup({ Fetch: { rows: [] } }),
+      registry,
+    });
+
+    expect(result.status).toBe("success");
+    const fetchTrace = result.trace.find((t) => t.nodeName === "Fetch");
+    expect(fetchTrace?.fidelityNotes?.join(" ")).toContain("mocked-output");
+    expect(result.fidelityNotes?.join(" ")).toContain("mocked-output");
+  });
 });

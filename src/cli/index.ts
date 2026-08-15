@@ -2,6 +2,7 @@
 import { Command } from "commander";
 import packageJson from "../../package.json" with { type: "json" };
 import { runCodeWorkerStdio } from "../nodes/code-sandbox.ts";
+import { registerEvalCommand } from "./commands/eval.ts";
 import { registerInitCommand } from "./commands/init.ts";
 import { registerRehearseCommand } from "./commands/rehearse.ts";
 import { registerRunCommand } from "./commands/run.ts";
@@ -22,6 +23,7 @@ if (process.argv[2] === "__code-worker") {
     .version(packageJson.version);
 
   registerRunCommand(program);
+  registerEvalCommand(program);
   registerRehearseCommand(program);
   registerScenarioCommand(program);
   registerValidateCommand(program);

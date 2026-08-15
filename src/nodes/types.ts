@@ -68,14 +68,37 @@ export interface ResolvedRequest {
   body?: unknown;
 }
 
+/**
+ * Scenario-provided instruction for resuming a waiting node (Wait, or a
+ * wait-for-approval flow). `timeout` models the node's expiry path; `data`
+ * is the payload delivered to the resumed node, mirroring what a real
+ * webhook resume would supply.
+ */
+export interface ResumeDirective {
+  data?: unknown;
+  timeout?: boolean;
+}
+
 export type NodeExecuteResult =
   | {
       status: "success";
       output: Item[][];
       resolvedRequests?: ResolvedRequest[];
       warnings?: string[];
+      /**
+       * Machine-readable fidelity caveats describing where this run's
+       * modeled behavior is known to be narrower than real n8n (e.g. a
+       * single-page mock standing in for a paginated endpoint). These are
+       * informational: the run succeeded, but real-service behavior may
+       * diverge at the annotated boundary.
+       */
+      fidelityNotes?: string[];
     }
   | { status: "error"; message: string }
+  | {
+      status: "waiting";
+      message: string;
+    }
   | {
       status: "waiting_mock";
       request: PendingMockRequest;
@@ -132,6 +155,12 @@ export interface RuntimeContext {
   codeTimeoutMs?: number;
   /** Explicitly capture sanitized HTTP request evidence for local assertions or CLI inspection. */
   captureResolvedRequests?: boolean;
+  /**
+   * Scenario-provided resume instructions keyed by waiting node name. A
+   * waiting node without a directive reports a `waiting` status instead of
+   * hanging the simulation.
+   */
+  resumeDirectives?: ReadonlyMap<string, ResumeDirective>;
 }
 
 export interface ExecuteArgs {

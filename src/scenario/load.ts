@@ -13,6 +13,8 @@ export interface ResolvedScenarioCase {
   run: ScenarioRunOverlay;
   faults?: ScenarioFault[];
   assertions?: ScenarioAssertions;
+  /** Golden-file path resolved relative to the manifest, when configured. */
+  snapshot?: string;
 }
 
 export interface ResolvedScenarioManifest {
@@ -91,7 +93,7 @@ export function resolveScenarioManifest(
       ? {}
       : { generatedFrom: manifest.generatedFrom }),
     cases: manifest.cases.map((entry) => {
-      const { name, faults, assertions, ...caseRun } = entry;
+      const { name, faults, assertions, snapshot, ...caseRun } = entry;
       return {
         name,
         run: resolveRunPaths(
@@ -100,6 +102,9 @@ export function resolveScenarioManifest(
         ),
         ...(faults === undefined ? {} : { faults }),
         ...(assertions === undefined ? {} : { assertions }),
+        ...(snapshot === undefined
+          ? {}
+          : { snapshot: resolvePath(baseDirectory, snapshot) as string }),
       };
     }),
   };

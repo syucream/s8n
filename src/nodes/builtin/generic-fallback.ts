@@ -7,6 +7,7 @@ import { lookupItemMock } from "../../mock/provider.ts";
 import {
   buildMockContractEvidence,
   defaultMockCardinalityHint,
+  MOCK_FIDELITY_NOTE,
 } from "../../mock/request-contract.ts";
 import { buildMockShapeHint } from "../../mock/shape-hint.ts";
 import type { Item } from "../../schema/item.ts";
@@ -69,6 +70,7 @@ export async function executeGenericFallback(
   const items =
     inputItems.length > 0 || !isStartNode ? inputItems : [{ json: {} }];
   const outputItems: Item[] = [];
+  let usedMock = false;
 
   for (let i = 0; i < items.length; i++) {
     const item = items[i] as Item;
@@ -219,8 +221,13 @@ export async function executeGenericFallback(
       };
     }
 
+    usedMock = true;
     outputItems.push(...normalizeMockToItems(mockValue, i));
   }
 
-  return { status: "success", output: [outputItems] };
+  return {
+    status: "success",
+    output: [outputItems],
+    ...(usedMock ? { fidelityNotes: [MOCK_FIDELITY_NOTE] } : {}),
+  };
 }

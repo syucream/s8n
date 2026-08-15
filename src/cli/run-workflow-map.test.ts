@@ -103,6 +103,7 @@ describe("run --workflow-map", () => {
         pendingMockCount: 0,
         errors: [],
         nested: [],
+        entryItems: [{ json: {}, pairedItem: { item: 0 } }],
       },
     ]);
   });

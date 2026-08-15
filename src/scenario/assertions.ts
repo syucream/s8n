@@ -8,6 +8,7 @@ import type {
   ScenarioNodeOutputCardinalityAssertion,
   ScenarioNodeOutputLineageAssertion,
   ScenarioNodeRequestAssertion,
+  ScenarioSubExecutionInputAssertion,
 } from "./schema.ts";
 
 const NON_EXECUTABLE_NODE_TYPES = new Set(["n8n-nodes-base.stickyNote"]);
@@ -43,7 +44,8 @@ export interface ScenarioAssertionFailure {
     | "nodeOutputs"
     | "nodeOutputCardinality"
     | "nodeOutputLineage"
-    | "nodeRequests";
+    | "nodeRequests"
+    | "subExecutionInputs";
   message: string;
   expected: unknown;
   actual: unknown;
@@ -188,6 +190,94 @@ function readJsonPointer(
   }
   return { exists: true, value: current };
 }
+function countOccurrences(value: string, substring: string): number {
+  let count = 0;
+  let index = value.indexOf(substring);
+  while (index !== -1) {
+    count++;
+    index = value.indexOf(substring, index + substring.length);
+  }
+  return count;
+}
+
+interface StringCheckFields {
+  matches?: string;
+  notMatches?: string;
+  occurrences?: {
+    substring: string;
+    atLeast?: number;
+    atMost?: number;
+  };
+}
+
+/** Applies matches/notMatches/occurrences checks to an observed string value. */
+function pushStringChecks(
+  value: unknown,
+  fields: StringCheckFields,
+  assertionName: ScenarioAssertionFailure["assertion"],
+  label: string,
+  failures: ScenarioAssertionFailure[],
+  location: { node?: string; item?: number; pointer?: string },
+): void {
+  const requested =
+    fields.matches !== undefined ||
+    fields.notMatches !== undefined ||
+    fields.occurrences !== undefined;
+  if (!requested) return;
+  if (typeof value !== "string") {
+    failures.push({
+      assertion: assertionName,
+      message: `String assertion requires a string value for ${label}`,
+      expected: "string",
+      actual: Array.isArray(value) ? "array" : typeof value,
+      ...location,
+    });
+    return;
+  }
+  if (fields.matches !== undefined && !new RegExp(fields.matches).test(value)) {
+    failures.push({
+      assertion: assertionName,
+      message: `Value did not match the required pattern for ${label}`,
+      expected: fields.matches,
+      actual: value,
+      ...location,
+    });
+  }
+  if (
+    fields.notMatches !== undefined &&
+    new RegExp(fields.notMatches).test(value)
+  ) {
+    failures.push({
+      assertion: assertionName,
+      message: `Value matched a forbidden pattern for ${label}`,
+      expected: `not ${fields.notMatches}`,
+      actual: value,
+      ...location,
+    });
+  }
+  if (fields.occurrences !== undefined) {
+    const { substring, atLeast, atMost } = fields.occurrences;
+    const actual = countOccurrences(value, substring);
+    if (atLeast !== undefined && actual < atLeast) {
+      failures.push({
+        assertion: assertionName,
+        message: `Substring occurred fewer times than required for ${label}`,
+        expected: `>= ${atLeast} occurrence(s) of ${JSON.stringify(substring)}`,
+        actual,
+        ...location,
+      });
+    }
+    if (atMost !== undefined && actual > atMost) {
+      failures.push({
+        assertion: assertionName,
+        message: `Substring occurred more times than allowed for ${label}`,
+        expected: `<= ${atMost} occurrence(s) of ${JSON.stringify(substring)}`,
+        actual,
+        ...location,
+      });
+    }
+  }
+}
 
 function evaluateNodeOutput(
   assertion: ScenarioNodeOutputAssertion,
@@ -224,8 +314,74 @@ function evaluateNodeOutput(
       ...location,
     });
   }
+  pushStringChecks(
+    observed.value,
+    assertion,
+    "nodeOutputs",
+    assertion.node,
+    failures,
+    location,
+  );
 }
 
+function evaluateSubExecutionInputs(
+  assertion: ScenarioSubExecutionInputAssertion,
+  result: RunResult,
+  failures: ScenarioAssertionFailure[],
+): void {
+  const index = assertion.index ?? 0;
+  const sub = result.subExecutions.filter(
+    (entry) => entry.callNodeName === assertion.callNode,
+  )[index];
+  const itemIndex = assertion.item ?? 0;
+  const item = sub?.entryItems?.[itemIndex];
+  const observed = readJsonPointer(item, assertion.pointer);
+  const location = {
+    node: assertion.callNode,
+    item: itemIndex,
+    ...(assertion.pointer === undefined ? {} : { pointer: assertion.pointer }),
+  };
+
+  if (sub === undefined) {
+    failures.push({
+      assertion: "subExecutionInputs",
+      message: `No sub-execution found for call node ${assertion.callNode} (index ${index})`,
+      expected: true,
+      actual: false,
+      ...location,
+    });
+    return;
+  }
+  if (assertion.exists !== undefined && observed.exists !== assertion.exists) {
+    failures.push({
+      assertion: "subExecutionInputs",
+      message: `Child input existence did not match for ${assertion.callNode}`,
+      expected: assertion.exists,
+      actual: observed.exists,
+      ...location,
+    });
+  }
+  if (
+    hasOwn(assertion, "equals") &&
+    !isDeepStrictEqual(observed.value, assertion.equals)
+  ) {
+    failures.push({
+      assertion: "subExecutionInputs",
+      message: `Child input value did not match for ${assertion.callNode}`,
+      expected: assertion.equals,
+      actual: observed.value,
+      ...location,
+    });
+  }
+  pushStringChecks(
+    observed.value,
+    assertion,
+    "subExecutionInputs",
+    assertion.callNode,
+    failures,
+    location,
+  );
+}
 function evaluateNodeOutputCardinality(
   assertion: ScenarioNodeOutputCardinalityAssertion,
   result: RunResult,
@@ -462,6 +618,9 @@ export function evaluateScenarioAssertions(
   }
   for (const assertion of assertions.nodeOutputLineage ?? []) {
     evaluateNodeOutputLineage(assertion, result, failures);
+  }
+  for (const assertion of assertions.subExecutionInputs ?? []) {
+    evaluateSubExecutionInputs(assertion, result, failures);
   }
 
   return { ok: failures.length === 0, coverage, failures };

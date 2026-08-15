@@ -314,4 +314,98 @@ describe("evaluateScenarioAssertions", () => {
       "nodeOutputLineage",
     ]);
   });
+
+  test("evaluates string operators against pointed-to output values", () => {
+    const withMessage = result();
+    withMessage.nodeOutputs.Transform = [
+      { json: { message: "*Approval request*\nFacility: Example Clinic" } },
+    ];
+
+    const passing = evaluateScenarioAssertions(workflow, withMessage, {
+      nodeOutputs: [
+        {
+          node: "Transform",
+          pointer: "/json/message",
+          matches: "^\\*Approval request\\*",
+          notMatches: "undefined|\\{\\{|\\$\\{",
+          occurrences: { substring: "Facility", atMost: 1 },
+        },
+      ],
+    });
+    expect(passing.ok).toBe(true);
+
+    const failing = evaluateScenarioAssertions(workflow, withMessage, {
+      nodeOutputs: [
+        {
+          node: "Transform",
+          pointer: "/json/message",
+          matches: "^Nope",
+          notMatches: "Approval",
+          occurrences: { substring: "Facility", atLeast: 2 },
+        },
+      ],
+    });
+    expect(failing.ok).toBe(false);
+    expect(failing.failures).toHaveLength(3);
+    expect(
+      failing.failures.every((failure) => failure.assertion === "nodeOutputs"),
+    ).toBe(true);
+  });
+
+  test("string operators require a string value", () => {
+    const evaluated = evaluateScenarioAssertions(workflow, result(), {
+      nodeOutputs: [
+        { node: "Transform", pointer: "/json/result/count", matches: "2" },
+      ],
+    });
+    expect(evaluated.ok).toBe(false);
+    expect(evaluated.failures[0]?.message).toContain("requires a string");
+  });
+
+  test("asserts the payload delivered to a called child's entry trigger", () => {
+    const withChildInput = result();
+    const baseSub = withChildInput.subExecutions[0];
+    if (baseSub === undefined) throw new Error("expected a sub-execution");
+    withChildInput.subExecutions[0] = {
+      ...baseSub,
+      entryItems: [
+        { json: { requestId: "req-1", facility: "Example Clinic" } },
+      ],
+      entryItemCount: 1,
+    };
+
+    const passing = evaluateScenarioAssertions(workflow, withChildInput, {
+      subExecutionInputs: [
+        {
+          callNode: "Call child",
+          pointer: "/json/requestId",
+          exists: true,
+          equals: "req-1",
+          matches: "^req-",
+        },
+        {
+          callNode: "Call child",
+          pointer: "/json/facility",
+          occurrences: { substring: "Clinic", atLeast: 1 },
+        },
+      ],
+    });
+    expect(passing.ok).toBe(true);
+
+    const failing = evaluateScenarioAssertions(workflow, withChildInput, {
+      subExecutionInputs: [
+        {
+          callNode: "Call child",
+          pointer: "/json/requestId",
+          equals: "req-9",
+        },
+        { callNode: "Unknown caller", pointer: "/json/x", exists: true },
+      ],
+    });
+    expect(failing.ok).toBe(false);
+    expect(failing.failures.map((failure) => failure.assertion)).toEqual([
+      "subExecutionInputs",
+      "subExecutionInputs",
+    ]);
+  });
 });

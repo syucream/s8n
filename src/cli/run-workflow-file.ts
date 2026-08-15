@@ -34,6 +34,8 @@ export interface RunWorkflowFileOptions {
   codeExecutionMode?: "in-process" | "vm" | "os" | "auto";
   codeTimeoutMs?: number;
   captureResolvedRequests?: boolean;
+  /** Resume instructions for waiting nodes, keyed by node name. */
+  resume?: Record<string, unknown>;
 }
 
 export type RunWorkflowFileResult =
@@ -212,6 +214,21 @@ export async function runWorkflowFile(
         codeExecutionMode: options.codeExecutionMode,
         codeTimeoutMs: options.codeTimeoutMs,
         captureResolvedRequests: options.captureResolvedRequests,
+        resumeDirectives: options.resume
+          ? new Map(
+              Object.entries(options.resume).map(([nodeName, value]) => [
+                nodeName,
+                value === "timeout"
+                  ? { timeout: true }
+                  : {
+                      data:
+                        value !== null && typeof value === "object"
+                          ? value
+                          : {},
+                    },
+              ]),
+            )
+          : undefined,
       });
       return { ok: true, workflow: loaded.workflow, result };
     } finally {

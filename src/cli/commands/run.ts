@@ -3,6 +3,11 @@ import { toN8nExecutionLog } from "../../format/n8n-execution.ts";
 import { printEnvelope } from "../../format/output.ts";
 import { EMULATED_SERVICES } from "../../integrations/types.ts";
 import { loadJsonFile } from "../load-json-file.ts";
+import { applyVariantIteration } from "../mock-variants.ts";
+import {
+  computeRepeatVariance,
+  type RepeatVarianceReport,
+} from "../repeat-variance.ts";
 import { runWorkflowFile } from "../run-workflow-file.ts";
 
 interface RunOpts {
@@ -20,6 +25,7 @@ interface RunOpts {
   codeTimeoutMs?: string;
   determinismCheck?: boolean;
   traceRequests?: boolean;
+  repeat?: string;
 }
 
 export function registerRunCommand(program: Command): void {
@@ -84,6 +90,10 @@ export function registerRunCommand(program: Command): void {
       "--trace-requests",
       "Include sanitized resolved HTTP request evidence in trace output",
     )
+    .option(
+      "--repeat <count>",
+      "Run the same scenario N times (cycling mock $variants) and report output variance",
+    )
     .action(async (workflowFile: string, opts: RunOpts) => {
       let input: unknown;
       try {
@@ -126,6 +136,21 @@ export function registerRunCommand(program: Command): void {
         return;
       }
 
+      const repeatCount =
+        opts.repeat === undefined ? undefined : Number(opts.repeat);
+      if (
+        repeatCount !== undefined &&
+        (!Number.isInteger(repeatCount) || repeatCount < 1)
+      ) {
+        printEnvelope({
+          ok: false,
+          command: "run",
+          error: `--repeat must be a positive integer: "${opts.repeat}"`,
+        });
+        process.exitCode = 1;
+        return;
+      }
+
       try {
         const emulatorSeed = await loadJsonFile(opts.emulatorSeed);
         const codeTimeoutMs =
@@ -156,10 +181,9 @@ export function registerRunCommand(program: Command): void {
           process.exitCode = 1;
           return;
         }
-        const executed = await runWorkflowFile({
+        const baseRunOptions = {
           workflowFile,
           input,
-          mocks,
           emulatorSeed,
           hasExplicitInput: opts.input !== undefined,
           workflowMapFile: opts.workflowMap,
@@ -170,7 +194,19 @@ export function registerRunCommand(program: Command): void {
           codeExecutionMode: opts.codeMode,
           codeTimeoutMs,
           captureResolvedRequests: opts.traceRequests === true,
-        });
+        };
+        const mocksRecord =
+          mocks !== null && typeof mocks === "object" && !Array.isArray(mocks)
+            ? (mocks as Record<string, unknown>)
+            : {};
+
+        const runOnce = async (iteration: number) => {
+          const iterationMocks = applyVariantIteration(mocksRecord, iteration);
+          return runWorkflowFile({ ...baseRunOptions, mocks: iterationMocks });
+        };
+
+        const runCount = repeatCount ?? 1;
+        let executed = await runOnce(0);
         if (!executed.ok) {
           printEnvelope({
             ok: false,
@@ -182,25 +218,32 @@ export function registerRunCommand(program: Command): void {
           return;
         }
 
+        let repeatVariance: RepeatVarianceReport | undefined;
+        if (runCount > 1) {
+          const results = [executed.result];
+          for (let iteration = 1; iteration < runCount; iteration++) {
+            const ran = await runOnce(iteration);
+            if (!ran.ok) {
+              printEnvelope({
+                ok: false,
+                command: "run",
+                error: `--repeat iteration ${iteration} failed: ${ran.error}`,
+                issues: ran.issues,
+              });
+              process.exitCode = 1;
+              return;
+            }
+            results.push(ran.result);
+            executed = ran;
+          }
+          repeatVariance = computeRepeatVariance(results);
+        }
+
         let determinism:
           | { equal: boolean; fingerprint?: string; error?: string }
           | undefined;
         if (opts.determinismCheck) {
-          const repeated = await runWorkflowFile({
-            workflowFile,
-            input,
-            mocks,
-            emulatorSeed,
-            hasExplicitInput: opts.input !== undefined,
-            workflowMapFile: opts.workflowMap,
-            resolveCodeIncludes: opts.resolveCodeIncludes === true,
-            now: opts.now,
-            startNode: opts.startNode,
-            emulate: opts.emulate?.split(","),
-            codeExecutionMode: opts.codeMode,
-            codeTimeoutMs,
-            captureResolvedRequests: opts.traceRequests === true,
-          });
+          const repeated = await runOnce(0);
           if (!repeated.ok) {
             determinism = { equal: false, error: repeated.error };
           } else {
@@ -223,6 +266,9 @@ export function registerRunCommand(program: Command): void {
               truncateData,
             })
           : executed.result;
+        const summary: Record<string, unknown> = {};
+        if (repeatVariance !== undefined) summary.repeat = repeatVariance;
+        if (determinism !== undefined) summary.determinism = determinism;
         printEnvelope({
           ok:
             (executed.result.status === "success" ||
@@ -230,12 +276,13 @@ export function registerRunCommand(program: Command): void {
             determinism?.equal !== false,
           command: "run",
           data:
-            determinism === undefined
+            Object.keys(summary).length === 0
               ? outputData
-              : { result: outputData, determinism },
+              : { result: outputData, ...summary },
         });
         if (
           executed.result.status === "error" ||
+          executed.result.status === "waiting" ||
           executed.result.status === "needs_start_node" ||
           determinism?.equal === false
         )
