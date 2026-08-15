@@ -8,6 +8,7 @@ import {
 } from "./assertions.ts";
 import type { ResolvedScenarioCase, ResolvedScenarioManifest } from "./load.ts";
 import type { ScenarioAssertions } from "./schema.ts";
+import { evaluateSnapshot } from "./snapshots.ts";
 
 export interface RehearsalTraceEntry {
   node: string;
@@ -39,6 +40,13 @@ export interface RehearsalCaseResult {
   effectCount: number;
   verifiedEffectCount: number;
   subExecutionCount: number;
+  /** Golden-file comparison outcome when the case configures `snapshot`. */
+  snapshot?: {
+    path: string;
+    updated: boolean;
+    diff: string[];
+    error?: string;
+  };
 }
 
 export interface RehearsalResult {
@@ -61,6 +69,8 @@ export interface RunRehearsalOptions {
   manifest: ResolvedScenarioManifest;
   selectedCases?: readonly string[];
   failFast?: boolean;
+  /** Rewrite golden files instead of comparing against them. */
+  updateSnapshots?: boolean;
 }
 
 function assertionNodeNames(assertions: ScenarioAssertions): string[] {
@@ -70,6 +80,7 @@ function assertionNodeNames(assertions: ScenarioAssertions): string[] {
     ...Object.keys(assertions.nodeOutputItemCounts ?? {}),
     ...(assertions.nodeOutputs ?? []).map((entry) => entry.node),
     ...(assertions.nodeRequests ?? []).map((entry) => entry.node),
+    ...(assertions.subExecutionInputs ?? []).map((entry) => entry.callNode),
     ...(assertions.nodeOutputCardinality ?? []).map((entry) => entry.node),
     ...(assertions.nodeOutputLineage ?? []).map((entry) => entry.node),
     ...(assertions.requiredEdges ?? []).flatMap((edge) => [
@@ -100,6 +111,7 @@ async function loadOptionalJson(path: string | undefined): Promise<unknown> {
 async function runCase(
   workflowFile: string,
   scenario: ResolvedScenarioCase,
+  updateSnapshots: boolean,
 ): Promise<RehearsalCaseResult> {
   const implicitAssertions: string[] = [];
   const assertions: ScenarioAssertions = {
@@ -134,6 +146,7 @@ async function runCase(
       codeExecutionMode: scenario.run.codeMode,
       codeTimeoutMs: scenario.run.codeTimeoutMs,
       captureResolvedRequests: (assertions.nodeRequests?.length ?? 0) > 0,
+      resume: scenario.run.resume,
     });
     if (!executed.ok) {
       return {
@@ -159,9 +172,19 @@ async function runCase(
       executed.result,
       assertions,
     );
+    const snapshotEvaluation = scenario.snapshot
+      ? await evaluateSnapshot({
+          snapshotPath: scenario.snapshot,
+          nodeOutputs: executed.result.nodeOutputs,
+          update: updateSnapshots,
+        })
+      : undefined;
     return {
       name: scenario.name,
-      passed: configurationErrors.length === 0 && evaluated.ok,
+      passed:
+        configurationErrors.length === 0 &&
+        evaluated.ok &&
+        (snapshotEvaluation?.ok ?? true),
       runStatus: executed.result.status,
       implicitAssertions,
       assertions: evaluated,
@@ -195,6 +218,18 @@ async function runCase(
         (effect) => effect.verified,
       ).length,
       subExecutionCount: executed.result.subExecutions.length,
+      ...(snapshotEvaluation === undefined
+        ? {}
+        : {
+            snapshot: {
+              path: scenario.snapshot as string,
+              updated: snapshotEvaluation.updated,
+              diff: snapshotEvaluation.diff,
+              ...(snapshotEvaluation.error === undefined
+                ? {}
+                : { error: snapshotEvaluation.error }),
+            },
+          }),
     };
   } catch (cause) {
     return {
@@ -225,7 +260,11 @@ export async function runRehearsal(
         );
   const cases: RehearsalCaseResult[] = [];
   for (const scenario of selected) {
-    const result = await runCase(options.workflowFile, scenario);
+    const result = await runCase(
+      options.workflowFile,
+      scenario,
+      options.updateSnapshots === true,
+    );
     cases.push(result);
     if (options.failFast && !result.passed) break;
   }

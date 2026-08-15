@@ -91,6 +91,7 @@ are:
   macOS/Linux OS sandbox and falls back to `vm`)
 - `codeTimeoutMs` (positive integer for bounded `vm`, `os`, or `auto` Code
   execution)
+- `resume` (waiting-node instructions keyed by node name; see below)
 
 A case-level inline value replaces the corresponding default file reference,
 and vice versa. Unknown fields, duplicate case names, invalid input shapes, and
@@ -127,10 +128,80 @@ while `lineageContains` requires only the listed origins. An omitted `item`
 means item `0`. Lineage is local execution evidence, not a claim about source
 records outside this simulator.
 
+In addition to `exists` and `equals`, `nodeOutputs` supports string checks for
+human-facing output: `matches` and `notMatches` are regular expressions applied
+to the pointed-to value (which must be a string), and `occurrences` bounds how
+many times a `substring` appears (`atLeast` and/or `atMost`). These catch the
+regressions people read but machines ignore - stray `undefined`, literal
+`{{ }}` braces, or a value appearing twice in one message:
+
+```yaml
+nodeOutputs:
+  - node: Compose Message
+    pointer: /json/message
+    matches: '^\*Approval request\*'
+    notMatches: 'undefined|\{\{|\$\{'
+    occurrences:
+      substring: Facility
+      atMost: 1
+```
+
+A case can also pin a golden file with `snapshot: ./golden.json`. The snapshot
+stores the case's final per-node output JSON (item `json` only). Run
+`s8n rehearse --update-snapshots` to write the baseline; later rehearsals fail
+with a bounded path diff when the observed output drifts. This is how "intended
+change" is separated from "accident" in assembled strings. Keep snapshots
+deterministic by pinning `now`.
+
+### Waiting nodes and resume
+
+A Wait node (`resume: onWebhookCall` / `onFormSubmission`) - the backbone of
+approval flows - halts its branch when it has no resume data. Cases resolve it
+with `resume`, keyed by node name: an object is the payload delivered to the
+resumed node (mirroring a webhook resume), and the literal `"timeout"` models
+expiry (which resumes with no payload, so downstream guards fall through to
+their default):
+
+```yaml
+cases:
+  - name: approved
+    resume:
+      Wait for approval: { approved: true }
+    assertions:
+      status: success
+  - name: timed-out
+    resume:
+      Wait for approval: timeout
+  - name: unresolved
+    assertions:
+      status: waiting
+```
+
+Without a directive the run reports a `waiting` status and the branch stops,
+so an incomplete approval flow is visible instead of silently hanging.
+
+### Sub-workflow entry payloads
+
+`subExecutionInputs` asserts what a called child workflow actually received at
+its entry trigger - the boundary where payload bugs are most common:
+
+```yaml
+subExecutionInputs:
+  - callNode: Call Child
+    pointer: /json/requestId
+    exists: true
+    equals: req-7
+```
+
+`callNode` names the calling `executeWorkflow` node, `index` selects among
+repeated calls (default `0`), and `item` / `pointer` / value checks behave like
+`nodeOutputs`. The same string checks (`matches`, `notMatches`,
+`occurrences`) apply.
+
 Executed coverage counts nodes that returned `success`, `pinned`, or `error`.
-Waiting mocks and skipped nodes remain uncovered with their trace status as the
-reason. Sticky Notes and nodes connected only through non-main AI ports are not
-part of the denominator.
+Waiting mocks, unresolved `waiting` nodes, and skipped nodes remain uncovered
+with their trace status as the reason. Sticky Notes and nodes connected only
+through non-main AI ports are not part of the denominator.
 
 ## Draft from an execution log
 
@@ -151,6 +222,13 @@ valid version 1 manifest. The importer:
 - replaces every scalar with a deterministic synthetic value;
 - omits binary data, credentials, raw errors, and execution identifiers;
 - marks the result `reviewRequired` and lists lossy conversion warnings.
+
+When the execution log contains LLM nodes, the draft also carries an
+`llmOutputs` section that normalizes the model's raw output into one place -
+`generations`/`text` on language-model and chain nodes, and the parser-shaped
+`output` on agents - so "what did the agent actually return" is reviewable
+instead of scattered across runData shapes. These verbatim strings are flagged
+in the warnings for redaction before sharing.
 
 The generated draft is not claimed to replay the original path. Replaced
 values can change conditions, repeated executions are collapsed, and called

@@ -106,8 +106,10 @@ describe("stateful service emulators", () => {
       tableId: "quality_events",
       query: "SELECT * FROM quality_events",
     });
+    // The real BigQuery node returns boolean values as strings ('true'), and
+    // the emulator reproduces that on reads - see coerceBigQueryRow.
     expect(queried?.output).toEqual([
-      expect.objectContaining({ gate: "integration", passed: true }),
+      expect.objectContaining({ gate: "integration", passed: "true" }),
     ]);
   });
 
@@ -257,6 +259,38 @@ describe("stateful service emulators", () => {
     expect(bigQuery?.effect.request).toMatchObject({
       rows: [expect.objectContaining({ event: "issue_created" })],
     });
+  });
+
+  test("BigQuery query results stringify booleans and numerics like the real node", async () => {
+    const runner = await EmulatorIntegrationRunner.create(["gcp"], {
+      stores: {
+        "gcp.bigquery.hits": [
+          { is_hit: true, score: 1.5, label: "kept" },
+          { is_hit: false, score: 0, label: null },
+        ],
+      },
+    });
+    const defaultQuery = await runner.execute(
+      node("n8n-nodes-base.googleBigQuery"),
+      { operation: "executeQuery", query: "SELECT * FROM hits" },
+    );
+    expect(defaultQuery?.output).toEqual([
+      { is_hit: "true", score: "1.5", label: "kept" },
+      { is_hit: "false", score: "0", label: null },
+    ]);
+
+    const numeric = await runner.execute(
+      node("n8n-nodes-base.googleBigQuery"),
+      {
+        operation: "executeQuery",
+        query: "SELECT * FROM hits",
+        options: { returnAsNumbers: true },
+      },
+    );
+    expect(numeric?.output).toEqual([
+      { is_hit: "true", score: 1.5, label: "kept" },
+      { is_hit: "false", score: 0, label: null },
+    ]);
   });
 
   test("GCS models the published bucket and object lifecycle", async () => {

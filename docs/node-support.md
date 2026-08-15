@@ -158,7 +158,23 @@ Special cases and known gaps:
   explicitly maps its reference. Mapped calls support synchronous
   `source=database`, `mode=once` execution, mapped inputs, scoped child mocks,
   child effects, nested evidence, cycle detection, and a depth limit. Other
-  modes fail explicitly.
+  modes fail explicitly. Child entry payloads are retained for
+  `subExecutionInputs` assertions.
+- HTTP Request pagination (`options.pagination.pagination`) is simulated from
+  the mock: `{ pages: [...] }` supplies one response per page, page-dependent
+  expressions (`completeExpression`, per-request updates) are evaluated against
+  `$response`, and each page's request is traced. Any other mock shape is
+  treated as a single complete page with a `pagination-single-page-mock`
+  fidelity note. Completion modes `responseIsEmpty`,
+  `receiveSpecificStatusCodes`, and `other` (`completeExpression`) are
+  supported; `limitPagesFetched`/`maxRequests` bound the page loop.
+- `executeOnce` is modeled: the node runs once with only the first item it
+  received, while trace `inputItemCounts` still report the full fan-in.
+- Wait nodes with `resume: onWebhookCall` / `onFormSubmission` consume a
+  scenario `resume` directive (payload or `"timeout"`); without one they report
+  a `waiting` status and halt their branch. Time-based waits pass through.
+- Nodes whose output came from a caller-supplied mock carry a `mocked-output`
+  fidelity note so "this may differ from the real service" is machine-readable.
 - JSON and YAML workflow files are accepted. `--resolve-code-includes`
   opt-in resolves only `./_subfiles/<directory>/<file>.js` Code assets, checks
   their real path remains under `_subfiles`, and rejects missing or invalid

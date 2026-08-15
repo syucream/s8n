@@ -102,6 +102,12 @@ does not reproduce authentication, rate limiting, permissions, pagination,
 webhooks, arbitrary BigQuery SQL, or real model semantics. Use explicit mocks
 for those cases until a dedicated emulator contract is added.
 
+BigQuery query reads reproduce the real node's wire behavior: row values come
+back as strings (`rows[].f[].v`), so a stored boolean `true` is read as the
+string `"true"` - a mock that returned real booleans would hide
+`if (row.is_hit)`-style truthiness bugs. The `returnAsNumbers` option converts
+INTEGER/NUMERIC/FLOAT/BIGNUMERIC columns back to numbers, matching upstream.
+
 ## Quality contract
 
 `bun run quality:services` runs create-to-read workflows for GWS, GCP, Notion,

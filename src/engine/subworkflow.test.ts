@@ -135,6 +135,16 @@ describe("mapped sub-workflow execution", () => {
         pendingMockCount: 0,
         errors: [],
         nested: [],
+        entryItems: [
+          {
+            json: { greeting: "Hello Ada", count: "2" },
+            pairedItem: { item: 0 },
+          },
+          {
+            json: { greeting: "Hello Lin", count: "3" },
+            pairedItem: { item: 1 },
+          },
+        ],
       },
     ]);
   });
@@ -376,5 +386,131 @@ describe("mapped sub-workflow execution", () => {
     expect(result.errors.join(" ")).toContain(
       "Sub-workflow depth limit (2) exceeded: first -> middle -> leaf",
     );
+  });
+
+  test("a waiting child without a resume directive reports waiting and halts the parent", async () => {
+    const parent = parentCalling("child-ref");
+    const callNode = parent.nodes.find((node) => node.name === "Call Child");
+    if (!callNode) throw new Error("missing call node");
+    callNode.parameters.workflowInputs = {
+      mappingMode: "defineBelow",
+      value: { requestId: "={{$json.id}}" },
+    };
+
+    const child = workflow({
+      name: "Approval child",
+      nodes: [
+        trigger(),
+        {
+          name: "Wait for approval",
+          type: "n8n-nodes-base.wait",
+          parameters: { resume: "onWebhookCall" },
+        },
+        {
+          name: "Apply",
+          type: "n8n-nodes-base.set",
+          parameters: { fields: [{ name: "applied", value: "=true" }] },
+        },
+      ],
+      connections: {
+        Called: {
+          main: [
+            [
+              {
+                node: "Wait for approval",
+                type: "main",
+                index: 0,
+              },
+            ],
+          ],
+        },
+        "Wait for approval": {
+          main: [[{ node: "Apply", type: "main", index: 0 }]],
+        },
+      },
+    });
+
+    const result = await runWorkflow(parent, {
+      initialInput: toItems([{ id: "req-1" }]),
+      hasExplicitInput: true,
+      mocks: emptyMockLookup,
+      registry,
+      workflowMap: new Map([["child-ref", child]]),
+    });
+
+    expect(result.status).toBe("waiting");
+    expect(result.subExecutions[0]?.status).toBe("waiting");
+    expect(result.subExecutions[0]?.traceStatusCounts.waiting).toBe(1);
+    // The waiting branch halts: no terminal output propagates to the parent.
+    expect(result.nodeOutputs["Call Child"]).toBeUndefined();
+  });
+
+  test("a scenario resume directive resolves the waiting child and continues the flow", async () => {
+    const parent = parentCalling("child-ref");
+    const callNode = parent.nodes.find((node) => node.name === "Call Child");
+    if (!callNode) throw new Error("missing call node");
+    callNode.parameters.workflowInputs = {
+      mappingMode: "defineBelow",
+      value: { requestId: "={{$json.id}}" },
+    };
+
+    const child = workflow({
+      name: "Approval child",
+      nodes: [
+        trigger(),
+        {
+          name: "Wait for approval",
+          type: "n8n-nodes-base.wait",
+          parameters: { resume: "onWebhookCall" },
+        },
+        {
+          name: "Apply",
+          type: "n8n-nodes-base.set",
+          parameters: {
+            assignments: {
+              assignments: [{ name: "approved", value: "={{$json.approved}}" }],
+            },
+          },
+        },
+      ],
+      connections: {
+        Called: {
+          main: [
+            [
+              {
+                node: "Wait for approval",
+                type: "main",
+                index: 0,
+              },
+            ],
+          ],
+        },
+        "Wait for approval": {
+          main: [[{ node: "Apply", type: "main", index: 0 }]],
+        },
+      },
+    });
+
+    const result = await runWorkflow(parent, {
+      initialInput: toItems([{ id: "req-1" }]),
+      hasExplicitInput: true,
+      mocks: emptyMockLookup,
+      registry,
+      workflowMap: new Map([["child-ref", child]]),
+      resumeDirectives: new Map([
+        ["Wait for approval", { data: { approved: true } }],
+      ]),
+    });
+
+    expect(result.status).toBe("success");
+    expect(result.subExecutions[0]?.status).toBe("success");
+    // Apply is the child's terminal node, so its output surfaces as the
+    // parent's "Call Child" output.
+    expect(result.nodeOutputs["Call Child"]?.map((item) => item.json)).toEqual([
+      { approved: true },
+    ]);
+    expect(result.subExecutions[0]?.entryItems).toEqual([
+      { json: { requestId: "req-1" }, pairedItem: { item: 0 } },
+    ]);
   });
 });

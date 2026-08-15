@@ -40,6 +40,12 @@ export interface ExpressionScope {
   /** Real n8n exposes these as Luxon `DateTime` (`$now: DateTime.now()`), not plain strings - see `workflow-data-proxy.ts`. */
   $now: DateTime;
   $today: DateTime;
+  /**
+   * Only present while evaluating HTTP Request pagination expressions
+   * (`completeExpression`, per-page request updates): the previous page's
+   * response as `{ body, headers, statusCode, statusMessage }`.
+   */
+  $response?: Record<string, unknown>;
 }
 
 export interface BuildScopeOptions {

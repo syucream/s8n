@@ -1,13 +1,13 @@
 import { createDefaultRegistry } from "../nodes/registry.ts";
 import type { Workflow } from "../schema/workflow.ts";
 
-interface ExecutionRun {
+export interface ExecutionRun {
   data?: { main?: unknown[][] };
   executionIndex?: number;
   executionStatus?: string;
 }
 
-interface ExecutionView {
+export interface ExecutionView {
   status?: string;
   startedAt?: string;
   startNode?: string;
@@ -26,6 +26,19 @@ export interface ImportedScenarioDraft {
     reviewRequired: true;
     warnings: string[];
   };
+  /**
+   * Normalized view of what each LLM node actually returned, extracted from
+   * runData. Real n8n scatters the model's raw output across places
+   * (`ai_languageModel` `generations`, chain `text`, structured parsers'
+   * `output`); this collapses them so "the agent returned this string" is
+   * visible in one place for review.
+   */
+  llmOutputs?: Array<{
+    node: string;
+    kind: "agent-output" | "language-model" | "chain-text";
+    text?: string;
+    output?: unknown;
+  }>;
   cases: Array<{
     name: string;
     input: Record<string, unknown>[];
@@ -79,7 +92,7 @@ export function synthesizeExecutionValue(
   return value === null ? null : "synthetic";
 }
 
-function unwrapExecution(raw: unknown): ExecutionView {
+export function unwrapExecution(raw: unknown): ExecutionView {
   let current = raw;
   for (let depth = 0; depth < 4; depth++) {
     if (current === null || typeof current !== "object") break;
@@ -130,6 +143,57 @@ function unwrapExecution(raw: unknown): ExecutionView {
   throw new Error(
     "Execution log must contain data.resultData.runData or resultData.runData",
   );
+}
+
+type LlmOutputEntry = NonNullable<ImportedScenarioDraft["llmOutputs"]>[number];
+
+function extractLlmOutputs(
+  runData: Record<string, ExecutionRun[]>,
+): LlmOutputEntry[] {
+  const outputs: LlmOutputEntry[] = [];
+  for (const [node, runs] of Object.entries(runData)) {
+    const last = runs?.at(-1);
+    const item = last?.data?.main?.[0]?.[0];
+    const json =
+      item !== null && typeof item === "object"
+        ? (item as { json?: unknown }).json
+        : undefined;
+    if (json === null || typeof json !== "object" || Array.isArray(json))
+      continue;
+    const record = json as Record<string, unknown>;
+    if (Array.isArray(record.generations)) {
+      const generation = record.generations[0] as Record<string, unknown>;
+      const message =
+        generation?.message !== null && typeof generation?.message === "object"
+          ? (generation.message as Record<string, unknown>)
+          : undefined;
+      const text =
+        typeof message?.content === "string"
+          ? message.content
+          : typeof generation?.text === "string"
+            ? generation.text
+            : typeof generation?.output === "string"
+              ? generation.output
+              : undefined;
+      outputs.push({
+        node,
+        kind: "language-model",
+        ...(text === undefined ? {} : { text }),
+      });
+    } else if (typeof record.text === "string") {
+      outputs.push({ node, kind: "chain-text", text: record.text });
+    } else if (Object.hasOwn(record, "output")) {
+      outputs.push({
+        node,
+        kind: "agent-output",
+        output: record.output,
+        ...(typeof record.output === "string"
+          ? { text: record.output }
+          : { text: JSON.stringify(record.output) }),
+      });
+    }
+  }
+  return outputs;
 }
 
 function lastMainItems(
@@ -219,10 +283,16 @@ export function importExecutionDraft(
       node.type === "n8n-nodes-base.executeWorkflow" &&
       reachedNodes.includes(node.name),
   );
+  const llmOutputs = extractLlmOutputs(execution.runData);
   const warnings = [
     "Scalar values were replaced with deterministic synthetic values.",
     "Value-dependent branches may diverge and require manual review.",
     "Binary data, credentials, raw errors, and execution identifiers were omitted.",
+    ...(llmOutputs.length > 0
+      ? [
+          "LLM outputs are preserved verbatim under llmOutputs for review; redact before sharing.",
+        ]
+      : []),
     ...(repeatedRunCollapsed
       ? ["Repeated node runs were collapsed to the final run."]
       : []),
@@ -242,6 +312,7 @@ export function importExecutionDraft(
       reviewRequired: true,
       warnings,
     },
+    ...(llmOutputs.length > 0 ? { llmOutputs } : {}),
     cases: [
       {
         name: "imported-execution-draft",

@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+- Model HTTP Request pagination: mock `{ pages: [...] }` drives a simulated page
+  loop, `completeExpression` and per-request updates evaluate against
+  `$response`, and single-page mocks are annotated with fidelity notes.
+- Add string assertions (`matches`, `notMatches`, `occurrences`) and
+  golden-file snapshots (`s8n rehearse --update-snapshots`) to scenario cases.
+- Run parent-child approval flows in one scenario: `resume` directives resolve
+  waiting nodes, `subExecutionInputs` asserts child entry payloads, and
+  unresolved waits report a `waiting` status.
+- Model `executeOnce` (one run with the first item) and add a machine-readable
+  `mocked-output` fidelity note for mock-served nodes.
+- Reproduce real BigQuery read typing in the emulator: booleans, numerics, and
+  dates come back as strings unless `returnAsNumbers` is set.
+- Add `--repeat N` variance over mock `$variants`, and a new `s8n eval` command
+  scoring real execution data against expectation fixtures (precision/recall).
+- Normalize LLM outputs into a single `llmOutputs` section when drafting
+  scenarios from execution logs.
 - Validate HTTP Request mock shapes against full-response configuration and
   expose opt-in sanitized request evidence for local write-path assertions.
 - Match `alwaysOutputData` when an empty input reaches external-I/O nodes without

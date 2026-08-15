@@ -6,6 +6,7 @@ import { runRehearsal } from "../../scenario/run.ts";
 interface RehearseOptions {
   case?: string[];
   failFast?: boolean;
+  updateSnapshots?: boolean;
 }
 
 export function registerRehearseCommand(program: Command): void {
@@ -16,6 +17,10 @@ export function registerRehearseCommand(program: Command): void {
     )
     .option("--case <names...>", "Run only the named scenario cases")
     .option("--fail-fast", "Stop after the first failed scenario case")
+    .option(
+      "--update-snapshots",
+      "Rewrite golden snapshot files instead of comparing against them",
+    )
     .action(
       async (
         workflowFile: string,
@@ -54,6 +59,7 @@ export function registerRehearseCommand(program: Command): void {
           manifest: loaded.manifest,
           selectedCases: options.case,
           failFast: options.failFast,
+          updateSnapshots: options.updateSnapshots,
         });
         const ok = result.summary.failed === 0;
         printEnvelope({ ok, command: "rehearse", data: result });

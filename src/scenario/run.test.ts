@@ -115,6 +115,60 @@ describe("runRehearsal", () => {
     expect(result.cases[0]?.implicitAssertions).toEqual(["status=success"]);
   });
 
+  test("snapshot cases write baselines then fail on drift", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "s8n-rehearsal-snapshot-"));
+    directories.push(directory);
+    const snapshotPath = join(directory, "golden.json");
+    const manifest: ResolvedScenarioManifest = {
+      version: 1,
+      cases: [
+        {
+          name: "enabled",
+          run: { input: { enabled: true } },
+          assertions: {
+            nodeOutputs: [
+              {
+                node: "Enabled",
+                pointer: "/json/result",
+                matches: "^enabled$",
+                notMatches: "undefined",
+              },
+            ],
+          },
+          snapshot: snapshotPath,
+        },
+      ],
+    };
+    const workflowFile = await branchingWorkflow();
+
+    const updated = await runRehearsal({
+      workflowFile,
+      manifest,
+      updateSnapshots: true,
+    });
+    expect(updated.cases[0]?.passed).toBe(true);
+    expect(updated.cases[0]?.snapshot).toMatchObject({
+      path: snapshotPath,
+      updated: true,
+    });
+
+    const compared = await runRehearsal({ workflowFile, manifest });
+    expect(compared.cases[0]?.passed).toBe(true);
+    expect(compared.cases[0]?.snapshot).toMatchObject({
+      updated: false,
+      diff: [],
+    });
+
+    // Drift the golden file: the observed output no longer matches.
+    await Bun.write(
+      snapshotPath,
+      `${JSON.stringify({ Enabled: [{ result: "tampered" }] }, null, 2)}\n`,
+    );
+    const drifted = await runRehearsal({ workflowFile, manifest });
+    expect(drifted.cases[0]?.passed).toBe(false);
+    expect(drifted.cases[0]?.snapshot?.diff.length).toBeGreaterThan(0);
+  });
+
   test("fails a case by default when the workflow does not succeed", async () => {
     const directory = await mkdtemp(join(tmpdir(), "s8n-rehearsal-run-"));
     directories.push(directory);

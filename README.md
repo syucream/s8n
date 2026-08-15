@@ -122,6 +122,33 @@ Then rerun:
 Repeat until the workflow succeeds. This request-and-rerun contract is designed
 to be easy for both people and external AI agents to follow.
 
+For HTTP Request nodes with pagination configured, the mock drives the page
+loop: `{ "pages": [page1, page2, ...] }` supplies one response per page and
+`completeExpression` / per-request cursor updates are evaluated against
+`$response`. Any other mock shape is treated as a single complete page with a
+`pagination-single-page-mock` fidelity note.
+
+To model "this node could return any of these shapes" (e.g. an LLM's varying
+output), declare `$variants` and combine it with `--repeat`:
+
+```json
+{
+  "$variants": {
+    "Agent": [
+      { "output": { "proposals": [{ "proposalId": "p1" }] } },
+      { "output": { "proposals": [{ "proposalId": "p1" }, { "proposalId": "p2" }] } }
+    ]
+  }
+}
+```
+
+```bash
+./dist/s8n run workflow.json --mocks variants.json --repeat 4
+```
+
+The result reports whether the workflow is deterministic across those variants
+and how its output item counts spread.
+
 For HTTP Request nodes, supplied mocks model the configured node output. When
 `options.response.response.fullResponse` is enabled, use an object containing
 `body`, `headers`, `statusCode`, and `statusMessage`; s8n reports a warning when
@@ -137,10 +164,12 @@ Credential-like values and unsafe header or raw-body content are redacted.
 | Workflow behavior | How s8n handles it |
 | --- | --- |
 | Common compute and control flow | Runs locally with built-in semantics |
+| HTTP Request pagination | Simulates page loops from `{ pages: [...] }` mocks, evaluating `$response` expressions; single-page mocks are annotated with a fidelity note |
 | HTTP Request and app integrations | Requests caller-provided mock output by default |
 | Supported service operations | Can use opt-in stateful emulation |
 | Existing n8n pinned data | Uses `pinData` directly |
-| Explicitly mapped called workflows | Executes them recursively and reports child evidence |
+| Explicitly mapped called workflows | Executes them recursively and reports child evidence (including child entry payloads) |
+| Waiting / approval nodes | Scenario `resume` directives resolve Wait nodes; without one the run reports `waiting` |
 | Unknown executable node types | Uses the generic mock fallback |
 
 Built-in behavior includes triggers, Set, If, Filter, Switch, Merge, Code,
@@ -164,6 +193,7 @@ s8n run <workflowFile> [options]  Simulate a workflow
 s8n rehearse <workflow> <manifest> Run optional repeatable scenarios
 s8n scenario validate <manifest>   Validate a scenario sidecar
 s8n scenario draft <workflow> <execution> Create a synthetic draft
+s8n eval <execution> <expectations> Score an LLM output fixture (precision/recall)
 s8n validate <workflowFile>       Validate schema and connections
 s8n schema [nodeType]             Inspect node parameters and mock requirements
 s8n init [--out file]             Create a minimal sample workflow
@@ -188,6 +218,10 @@ Useful `run` options:
   `vm`. `--code-timeout-ms` changes the limit.
 - `--determinism-check` runs the same input twice and reports whether the
   stable execution evidence matches (wall-clock timing is excluded).
+- `--repeat <count>` runs the same scenario N times - cycling mock `$variants`
+  if present - and reports output variance (per-node item-count spread plus a
+  hash of each run's output) so you can ask "is this workflow deterministic?"
+  in numbers.
 
 Run `./dist/s8n --help` or `./dist/s8n run --help` for the complete CLI help.
 Every command writes exactly one machine-readable JSON envelope to stdout.
@@ -210,10 +244,12 @@ union coverage, safe execution-log drafts, and the external-agent loop.
   variables, but may retain read-only access needed by the runtime. Treat this
   as a stronger guardrail, not a universal confidentiality boundary.
 - Emulation does not reproduce authentication, authorization, rate limits,
-  pagination, webhooks, arbitrary BigQuery SQL, real model semantics, or AI
-  output quality.
+  real pagination, webhooks, arbitrary BigQuery SQL, real model semantics, or
+  AI output quality. Mock-driven HTTP pagination is a simulation: completion
+  and cursor updates only reflect the pages the mock supplies.
 - Execute Workflow supports only the synchronous, once-per-run subset when an
-  explicit map is supplied; other modes fail explicitly.
+  explicit map is supplied; other modes fail explicitly. Unresolved waiting
+  nodes report a `waiting` status and halt their branch.
 - Code-node static data lasts for one execution only.
 - Nested Loop Over Items flows and complete cross-iteration `pairedItem`
   tracking are not supported.
