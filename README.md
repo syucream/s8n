@@ -189,14 +189,15 @@ Google Cloud, Notion, Jira, and GitHub operations. See:
 ## Command overview
 
 ```text
-s8n run <workflowFile> [options]  Simulate a workflow
-s8n rehearse <workflow> <manifest> Run optional repeatable scenarios
-s8n scenario validate <manifest>   Validate a scenario sidecar
-s8n scenario draft <workflow> <execution> Create a synthetic draft
-s8n eval <execution> <expectations> Score an LLM output fixture (precision/recall)
-s8n validate <workflowFile>       Validate schema and connections
-s8n schema [nodeType]             Inspect node parameters and mock requirements
-s8n init [--out file]             Create a minimal sample workflow
+s8n run <workflowFile> [options]             Simulate a workflow
+s8n test <testFile...>                       Run TypeScript workflow tests
+s8n rehearse <workflow> <manifest>           Run optional repeatable scenarios
+s8n scenario validate <manifest>             Validate a scenario sidecar
+s8n scenario draft <workflow> <execution>    Create a synthetic draft
+s8n eval <execution> <expectations>          Score an LLM output fixture (precision/recall)
+s8n validate <workflowFile>                  Validate schema and connections
+s8n schema [nodeType]                        Inspect node parameters and mock requirements
+s8n init [--out file]                        Create a minimal sample workflow
 ```
 
 Useful `run` options:
@@ -230,6 +231,46 @@ Scenario manifests are optional: the workflow file remains canonical and the
 existing `run` command never discovers a sidecar implicitly. See
 [Scenario rehearsal](docs/scenario-rehearsal.md) for multi-case assertions,
 union coverage, safe execution-log drafts, and the external-agent loop.
+
+## Write workflow tests
+
+Workflows can be tested from TypeScript with `s8n test`. Each test simulates
+the workflow with its own input, mocks, faults, and resume data, then asserts
+on the full engine result - including cross-node invariants such as "nothing
+is written to Slack unless a human approval happened first":
+
+```bash
+bun run src/cli/index.ts test examples/approval.test.ts
+```
+
+```ts
+import { defineSuite } from "s8n";
+
+export default defineSuite(
+  { workflow: "./approval.workflow.json" },
+  (test) => {
+    test("an approved request is posted to slack", async (run, expect) => {
+      const r = await run({
+        input: { requestId: "req-7", amount: 120 },
+        mocks: { "Post to Slack": { ok: true } },
+        resume: { "Wait for approval": { approved: true } },
+      });
+      expect(r).status("success");
+      expect(r).ran("Wait for approval").before("Post to Slack");
+      expect(r).itemReaching("Post to Slack").passedThrough("Wait for approval");
+      expect(r).allPathsTo("Post to Slack").passThrough("Wait for approval");
+    });
+  },
+);
+```
+
+`run` returns the full engine `RunResult`, so any assertion is expressible -
+the matchers are ergonomic wrappers, not a ceiling. Tests can import
+`defineSuite` from the `s8n` package or rely on globals injected by the
+command. The injected-globals form also works from the standalone binary;
+import-based test files need the `s8n` package resolvable (a checkout or a Bun
+git dependency). See [Workflow tests](docs/workflow-tests.md) for the full
+API, matcher semantics, and fidelity boundaries.
 
 ## Safety and limitations
 

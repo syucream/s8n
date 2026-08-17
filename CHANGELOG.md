@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- Add a TypeScript workflow-test layer (`s8n test`): each test simulates the
+  workflow with its own input, mocks, faults, and resume data, then asserts on
+  the full engine result. Matchers cover status, executed/skipped nodes,
+  cross-node ordering, dynamic data-flow provenance, static path gates, and
+  JSON Pointer output checks, with the raw `RunResult` exposed for arbitrary
+  TypeScript assertions. Tests can import `defineSuite` from the package or use
+  globals injected by the command; import-free files also run from the
+  standalone binary.
 - Model HTTP Request pagination: mock `{ pages: [...] }` drives a simulated page
   loop, `completeExpression` and per-request updates evaluate against
   `$response`, and single-page mocks are annotated with fidelity notes.

@@ -1,5 +1,11 @@
 # Scenario rehearsal
 
+> [!NOTE]
+> For new tests, prefer the TypeScript layer: [Workflow tests](workflow-tests.md)
+> (`s8n test`). The declarative YAML manifest described here remains supported
+> for machine/agent-authored assertions, but `s8n test` is the recommended path
+> for cross-node invariants and anything that benefits from real control flow.
+
 Scenario manifests are optional sidecars for repeatable workflow tests. The
 workflow JSON or YAML remains the canonical source: `s8n run workflow.json`
 never searches for or requires a manifest.
