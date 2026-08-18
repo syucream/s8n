@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.9.0 - 2026-08-18
 
 - Load workflow definitions from TypeScript (`.ts`/`.mts`) files that export
   the workflow object, matching the plain-object shape of the standard workflow
