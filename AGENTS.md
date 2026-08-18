@@ -53,6 +53,10 @@ test pass.
 - `src/mock/` owns mock lookup, normalization, and shape hints.
 - `src/format/` owns the stable machine-readable output formats.
 - `src/schema/` owns workflow and item validation.
+- `src/test/` owns the TypeScript workflow-test DSL (`s8n test`): suite
+  registration, the runner over `runWorkflowFile`, and the cross-node matchers.
+  The runner must keep the full engine `RunResult` visible to test code; the
+  existing scenario layer's trace stripping does not apply there.
 
 App-specific integration nodes such as Slack, Notion, or BigQuery should remain
 on the generic fallback. Add a dedicated built-in executor only for genuine

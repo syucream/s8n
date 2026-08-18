@@ -63,6 +63,62 @@ describe("loadWorkflowFile", () => {
     expect(result.workflow?.name).toBe("JSON workflow");
   });
 
+  test("loads a workflow defined as a TypeScript default export", async () => {
+    const path = await fixture(
+      "ts",
+      [
+        "export default {",
+        '  name: "TS workflow",',
+        '  nodes: [{ name: "Start", type: "n8n-nodes-base.manualTrigger" }],',
+        "  connections: {},",
+        "  settings: {},",
+        "};",
+      ].join("\n"),
+    );
+
+    const result = await loadWorkflowFile(path);
+
+    expect(result.ok).toBe(true);
+    expect(result.workflow?.name).toBe("TS workflow");
+  });
+
+  test("loads a workflow defined as a named TypeScript export", async () => {
+    const path = await fixture(
+      "ts",
+      [
+        "export const workflow = {",
+        '  name: "TS named workflow",',
+        '  nodes: [{ name: "Start", type: "n8n-nodes-base.manualTrigger" }],',
+        "  connections: {},",
+        "  settings: {},",
+        "};",
+      ].join("\n"),
+    );
+
+    const result = await loadWorkflowFile(path);
+
+    expect(result.ok).toBe(true);
+    expect(result.workflow?.name).toBe("TS named workflow");
+  });
+
+  test("rejects a TypeScript workflow without a workflow export", async () => {
+    const path = await fixture("ts", "export const notAWorkflow = 42;\n");
+
+    const result = await loadWorkflowFile(path);
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toContain("must export a workflow object");
+  });
+
+  test("returns a load error for a TypeScript file that throws", async () => {
+    const path = await fixture("ts", 'throw new Error("boom");\n');
+
+    const result = await loadWorkflowFile(path);
+
+    expect(result.ok).toBe(false);
+    expect(result.error).toStartWith("Failed to load workflow file:");
+  });
+
   test("returns a load error for invalid YAML", async () => {
     const path = await fixture("yml", "name: [unterminated");
 
