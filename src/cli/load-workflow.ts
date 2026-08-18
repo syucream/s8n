@@ -19,6 +19,30 @@ function parseWorkflowSource(path: string, text: string): unknown {
   return JSON.parse(text);
 }
 
+/**
+ * Loads a workflow definition. JSON and YAML are parsed as data; a `.ts` or
+ * `.mts` file is evaluated and must export the workflow as its default export
+ * or as a named `workflow` export. That matches the plain-object shape of the
+ * standard workflow JSON, so code-first definitions built with `@n8n/workflow-sdk`
+ * (or any plain object literal) work unchanged. Executing the file runs its
+ * module-level code, so `.ts` workflows are trusted code like workflow tests.
+ */
+async function loadWorkflowSource(path: string): Promise<unknown> {
+  const normalizedPath = path.toLowerCase();
+  if (normalizedPath.endsWith(".ts") || normalizedPath.endsWith(".mts")) {
+    const module = (await import(resolve(path))) as Record<string, unknown>;
+    const workflow = module.default ?? module.workflow;
+    if (workflow === undefined || typeof workflow !== "object") {
+      throw new Error(
+        "TypeScript workflow files must export a workflow object as the default export or as a named `workflow` export",
+      );
+    }
+    return workflow;
+  }
+  const text = await Bun.file(path).text();
+  return parseWorkflowSource(path, text);
+}
+
 async function resolveCodeIncludes(path: string, raw: unknown): Promise<void> {
   if (raw === null || typeof raw !== "object" || !("nodes" in raw)) return;
   const nodes = (raw as { nodes?: unknown }).nodes;
@@ -78,8 +102,7 @@ export async function loadWorkflowFile(
 ): Promise<LoadWorkflowResult> {
   let raw: unknown;
   try {
-    const text = await Bun.file(path).text();
-    raw = parseWorkflowSource(path, text);
+    raw = await loadWorkflowSource(path);
     if (options.resolveCodeIncludes) await resolveCodeIncludes(path, raw);
   } catch (cause) {
     return {

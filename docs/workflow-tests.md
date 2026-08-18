@@ -74,7 +74,7 @@ export default defineSuite(
 
 | Field | Purpose |
 | --- | --- |
-| `workflow` | Workflow JSON/YAML path, resolved relative to the test file |
+| `workflow` | Workflow path. JSON, YAML, and TypeScript (`.ts`/`.mts`) are supported; a TypeScript workflow must export the workflow object as the default export or a named `workflow` export |
 | `workflowMap` | Explicit map for called sub-workflows |
 | `resolveCodeIncludes` | Resolve strict workflow-local `_subfiles` Code assets |
 | `emulate` | Suite-wide emulated services; cases can override |

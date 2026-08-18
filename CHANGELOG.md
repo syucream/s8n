@@ -2,6 +2,9 @@
 
 ## Unreleased
 
+- Load workflow definitions from TypeScript (`.ts`/`.mts`) files that export
+  the workflow object, matching the plain-object shape of the standard workflow
+  JSON so code-first definitions (e.g. from `@n8n/workflow-sdk`) work unchanged.
 - Add a TypeScript workflow-test layer (`s8n test`): each test simulates the
   workflow with its own input, mocks, faults, and resume data, then asserts on
   the full engine result. Matchers cover status, executed/skipped nodes,

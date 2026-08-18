@@ -81,6 +81,16 @@ Export a workflow as JSON or YAML from n8n, then run:
 ./dist/s8n run path/to/workflow.json
 ```
 
+A workflow can also be defined as code: a `.ts`/`.mts` file that exports the
+workflow object (default export or a named `workflow` export) is evaluated and
+loaded the same way. This matches the plain-object shape of the standard
+workflow JSON, so code-first definitions built with `@n8n/workflow-sdk` work
+unchanged:
+
+```bash
+bun run src/cli/index.ts run path/to/workflow.ts
+```
+
 Repositories that split trusted Code nodes into YAML `!include` assets can
 enable the strict `_subfiles` resolver explicitly:
 
