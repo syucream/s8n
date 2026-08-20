@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.10.0 - 2026-08-20
+
+- Add `s8n serve`: a loopback-only HTTP mock server that exposes a workflow's
+  Webhook and Form Trigger start nodes as inbound endpoints, so other n8n
+  clients and integration tests can call them without running n8n. Webhook
+  routes honor `responseMode` (`onReceived`, `whenLastNodeFinishes`,
+  `responseNode` via Respond to Webhook) and produce n8n-shaped trigger items;
+  form routes render an HTML page on GET and run the workflow on POST. Runs
+  reaching a Wait-on-webhook/form node suspend with a `202` + `resumePath`, can
+  be resumed over HTTP, and expose the final `RunResult` via `/executions/<id>`.
+  The server keeps per-execution emulator state alive across a resume, prints a
+  single startup envelope to stdout (diagnostics to stderr), and stops
+  gracefully on SIGINT/SIGTERM.
+
 ## 0.9.0 - 2026-08-18
 
 - Load workflow definitions from TypeScript (`.ts`/`.mts`) files that export
