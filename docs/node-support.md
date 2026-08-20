@@ -37,6 +37,14 @@ Webhook and HTTP Request have dedicated executors for richer input and mock-key
 behavior, but they never perform network I/O. Their external response is still
 injected.
 
+`s8n serve` is a loopback-only HTTP mock server that exposes a workflow's
+Webhook and Form Trigger start nodes as inbound endpoints (`/webhook/<path>`
+and `/form/<urlPath>`). It reuses the same engine, mock, and emulator machinery
+as `s8n run`; only the inbound request is real HTTP. Outbound I/O is always
+mocked or emulated, and the server implements no credentials, authentication,
+rate limits, TLS, binary streaming, or webhook registration. See the README for
+the response-mode semantics and Wait-resume flow.
+
 Run `s8n schema` for the machine-readable current list and parameter summaries.
 The source of truth for registration is `src/nodes/registry.ts`.
 

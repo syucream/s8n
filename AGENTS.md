@@ -83,6 +83,15 @@ Preserve the stable stdout contract: every CLI invocation emits exactly one JSON
 envelope with `ok`, `command`, and either `data`, `issues`, or `error`. Diagnostic
 text must not corrupt stdout.
 
+`s8n serve` is the one exception that stays alive after its startup envelope: it
+prints a single JSON envelope on stdout at startup (the bound address and route
+table), then never writes to stdout again - runtime diagnostics go to stderr.
+It binds to loopback only, receives inbound webhook/form traffic, and never
+performs real outbound I/O (outbound is always mocked or emulated). It is a
+local test double, not an n8n replacement: it does not implement credentials,
+authentication, rate limits, TLS, binary streaming, webhook registration, or
+production behavior.
+
 ## Tests and change hygiene
 
 - Add normal and failure-path tests for behavior changes.

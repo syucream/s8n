@@ -196,10 +196,49 @@ Google Cloud, Notion, Jira, and GitHub operations. See:
 - [Service emulation](docs/service-emulation.md) for supported operations,
   seed formats, evidence contracts, and fidelity limits.
 
+## Serve a workflow as a local mock server
+
+`s8n serve` starts a loopback-only HTTP mock server that exposes the workflow's
+webhook and form triggers, so other n8n clients (or your own integration tests)
+can call them over HTTP without running n8n:
+
+```bash
+./dist/s8n serve path/to/workflow.json --port 0
+```
+
+The command prints one JSON envelope with the bound address and route table,
+then stays alive. Point a client at the listed paths:
+
+- `POST /webhook/<path>` runs the workflow from the matching Webhook trigger.
+  The response honors the webhook's `responseMode` (empty 200 for `onReceived`,
+  the terminal node output for `whenLastNodeFinishes`, or the `Respond to
+  Webhook` node's data for `responseNode`).
+- `GET /form/<urlPath>` renders an HTML form page; `POST` submits it and runs
+  the workflow.
+- `GET /executions/<id>` returns the final `RunResult` for any execution.
+
+Runs that reach a Wait node resuming `onWebhookCall` / `onFormSubmission`
+return `202` with a `resumePath`; `POST` that path to deliver the resume
+payload, then poll `/executions/<id>` for the result:
+
+```bash
+# start, then:
+curl -X POST http://127.0.0.1:5678/webhook/approve -d '{"requestId":"r-1"}'
+# -> 202 { "executionId": "exec-1", "resumePath": "/webhook-waiting/exec-1" }
+curl -X POST http://127.0.0.1:5678/webhook-waiting/exec-1 -d '{"approved":true}'
+curl http://127.0.0.1:5678/executions/exec-1
+```
+
+`s8n serve` is a local test double: it binds to loopback, receives inbound
+traffic, and never performs real outbound I/O - every external node is still
+mocked or emulated, and credentials/authentication/rate limits/TLS are not
+implemented.
+
 ## Command overview
 
 ```text
 s8n run <workflowFile> [options]             Simulate a workflow
+s8n serve <workflowFile> [options]           Start a local webhook/form mock server
 s8n test <testFile...>                       Run TypeScript workflow tests
 s8n rehearse <workflow> <manifest>           Run optional repeatable scenarios
 s8n scenario validate <manifest>             Validate a scenario sidecar

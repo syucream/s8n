@@ -8,6 +8,7 @@ import { registerRehearseCommand } from "./commands/rehearse.ts";
 import { registerRunCommand } from "./commands/run.ts";
 import { registerScenarioCommand } from "./commands/scenario.ts";
 import { registerSchemaCommand } from "./commands/schema.ts";
+import { registerServeCommand } from "./commands/serve.ts";
 import { registerTestCommand } from "./commands/test.ts";
 import { registerValidateCommand } from "./commands/validate.ts";
 
@@ -27,6 +28,7 @@ if (process.argv[2] === "__code-worker") {
   registerEvalCommand(program);
   registerRehearseCommand(program);
   registerScenarioCommand(program);
+  registerServeCommand(program);
   registerTestCommand(program);
   registerValidateCommand(program);
   registerSchemaCommand(program);

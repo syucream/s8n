@@ -1,0 +1,42 @@
+{
+  "name": "Webhook echo",
+  "nodes": [
+    {
+      "id": "webhook",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [0, 0],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "echo",
+        "responseMode": "lastNode"
+      }
+    },
+    {
+      "id": "set",
+      "name": "Set reply",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3,
+      "position": [220, 0],
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "reply",
+              "name": "reply",
+              "value": "={{ $json.body.message }}",
+              "type": "string"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [[{ "node": "Set reply", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": {}
+}
