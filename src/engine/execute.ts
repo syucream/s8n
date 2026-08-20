@@ -17,6 +17,7 @@ import type {
   ResolvedRequest,
   ResumeDirective,
   RuntimeContext,
+  WaitResumeProvider,
 } from "../nodes/types.ts";
 import type { Item } from "../schema/item.ts";
 import { toItems } from "../schema/item.ts";
@@ -57,6 +58,12 @@ export interface RunOptions {
   captureResolvedRequests?: boolean;
   /** Scenario-provided resume instructions keyed by waiting node name. */
   resumeDirectives?: ReadonlyMap<string, ResumeDirective>;
+  /**
+   * Async external-resume provider, consulted by the Wait node after
+   * `resumeDirectives`. Used by the in-process HTTP mock server to suspend
+   * a run and resume it later from a webhook/form resume endpoint.
+   */
+  resumeProvider?: WaitResumeProvider;
 }
 
 export type NodeTraceStatus =
@@ -249,7 +256,10 @@ function extractWorkflowReference(workflowId: unknown): string | undefined {
   return undefined;
 }
 
-function terminalOutput(workflow: Workflow, result: RunResult): Item[][] {
+export function terminalOutput(
+  workflow: Workflow,
+  result: RunResult,
+): Item[][] {
   const nodesWithMainDestinations = new Set<string>();
   for (const [sourceName, connections] of Object.entries(
     workflow.connections,
@@ -421,6 +431,7 @@ export async function runWorkflow(
     codeTimeoutMs: options.codeTimeoutMs,
     captureResolvedRequests: options.captureResolvedRequests,
     resumeDirectives: options.resumeDirectives,
+    resumeProvider: options.resumeProvider,
   };
   const aiConnectionTypes = [
     "ai_languageModel",

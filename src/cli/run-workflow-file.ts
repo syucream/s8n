@@ -64,7 +64,9 @@ function validateMocks(rawMocks: unknown) {
   return createMockLookup(rawMocks as Record<string, unknown>);
 }
 
-function validateEmulatorSeed(rawSeed: unknown): EmulatorSeed | undefined {
+export function validateEmulatorSeed(
+  rawSeed: unknown,
+): EmulatorSeed | undefined {
   if (rawSeed === undefined) return undefined;
   if (
     rawSeed === null ||
@@ -87,7 +89,7 @@ function validateEmulatorSeed(rawSeed: unknown): EmulatorSeed | undefined {
   return rawSeed as EmulatorSeed;
 }
 
-function resolveEmulatedServices(
+export function resolveEmulatedServices(
   requested: readonly string[] | undefined,
 ): EmulatedService[] | undefined {
   if (requested === undefined) return undefined;

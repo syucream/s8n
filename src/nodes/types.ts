@@ -79,6 +79,20 @@ export interface ResumeDirective {
   timeout?: boolean;
 }
 
+/** External-resume modes of the Wait node that need caller-supplied data. */
+export type WaitResumeMode = "onWebhookCall" | "onFormSubmission";
+
+/**
+ * Async resolver for waits that need an external resume. When present, the
+ * Wait node awaits a returned directive (instead of reporting a `waiting`
+ * status). Used by the in-process HTTP mock server to suspend a run and later
+ * resume it from a webhook/form resume endpoint.
+ */
+export type WaitResumeProvider = (
+  node: WorkflowNode,
+  mode: WaitResumeMode,
+) => Promise<ResumeDirective> | ResumeDirective;
+
 export type NodeExecuteResult =
   | {
       status: "success";
@@ -161,6 +175,12 @@ export interface RuntimeContext {
    * hanging the simulation.
    */
   resumeDirectives?: ReadonlyMap<string, ResumeDirective>;
+  /**
+   * Async provider consulted (after `resumeDirectives`) when a Wait node needs
+   * an external resume. Supplied by the in-process HTTP mock server so runs
+   * can suspend and later be resumed over HTTP.
+   */
+  resumeProvider?: WaitResumeProvider;
 }
 
 export interface ExecuteArgs {
